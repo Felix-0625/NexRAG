@@ -1,0 +1,83 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+**/*/__pycache__/
+
+# Environments and Package Managers
+.venv/
+venv/
+ENV/
+env/
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Testing and Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Type checking and Linters
+.mypy_cache/
+.ruff_cache/
+
+# IDE and Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Database and Local Storage (ignore local sqlite files and vector data)
+*.db
+*.sqlite
+*.sqlite3
+storage/
+qdrant_storage/
+openwebui_data/
+# Reproducible upstream checkout created by scripts/prepare-webui.ps1.
+webui/
+data/sqlite/*.db
+data/sqlite/*.sqlite
+data/sqlite/*.sqlite3
+data/source/
+data/local-admin-credentials.json
+data/docs/*
+# inspect_local_file's dedicated sandbox root (src/config.py SANDBOX_ROOT_DIR).
+data/sandbox_uploads/*
+# Writable operations data domain (traces, scores, memory, artifacts).
+data/ops/
+# Agent-generated exports (user-bound folder; see src/agent/exports.py).
+data/artifacts/
+!data/docs/.gitkeep
+!data/sqlite/.gitkeep
+!data/sandbox_uploads/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Native run: downloaded binaries, service data, logs.
+tools/
+data/qdrant/
+data/openwebui/
+.local-run/
+
+# Per-machine tool/session markers are not project deliverables.
+.claude/
+.bug-hunter/
+.claude/scheduled_tasks.lock
+.qdrant-initialized

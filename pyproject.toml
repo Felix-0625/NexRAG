@@ -1,0 +1,74 @@
+[project]
+name = "nexrag"
+version = "0.1.0"
+description = "NexRAG: local agentic RAG built upon Open WebUI and AarhusAI"
+readme = "README.md"
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    # 2.60 fixes Anthropic 2.x message parameter unions (upstream #11077).
+    "pydantic-ai-slim[openai,anthropic,google]>=2.60.0,<3.0",
+    "cryptography>=44.0",
+    "qdrant-client>=1.12.0",
+    "sqlglot>=26.0.0",
+    "pyyaml>=6.0.2",
+    "PyJWT>=2.9.0",
+    "httpx>=0.28.0",
+    "mcp>=2.2.0,<3.0",
+    "python-dotenv>=1.0.0",
+    "psycopg[binary]>=3.2,<4.0",
+    "fastembed>=0.4.0,<1.0",
+    "python-multipart>=0.0.18,<0.1",
+    "defusedxml>=0.7.1,<1.0",
+]
+
+# Installed by `uv sync` by default, so scripts/check-code.ps1 always finds
+# pytest in .venv instead of silently falling back to a global binary.
+[dependency-groups]
+dev = [
+    "aiosqlite==0.22.1",
+    "filelock==4.2.5",
+    "pytest>=9.0,<10.0",
+    "pytest-asyncio>=1.0,<2.0",
+    "ruff>=0.17,<0.18",
+    "sqlalchemy==2.0.50",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+    ".git",
+    ".venv",
+    "base",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+# FastEmbed 0.9 still caps Pillow below 13. Pillow 13 fixes the October 2026
+# image-decoder advisories. Text/BM42 and image compatibility are separately
+# verified; remove this override when FastEmbed officially permits Pillow 13.
+[tool.uv]
+override-dependencies = ["pillow>=13.0.0,<14"]

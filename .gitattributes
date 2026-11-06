@@ -1,0 +1,2 @@
+# Unified diff files contain upstream context, including original indentation.
+patches/open-webui/v0.11.4/nexrag/*.diff -whitespace
