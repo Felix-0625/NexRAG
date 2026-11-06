@@ -1,0 +1,141 @@
+name: NexRAG CI
+
+# Core and maintained native retrieval/ingestion paths are all release gates.
+on:
+  pull_request:
+    paths: &paths
+      - "src/**"
+      - "scripts/**"
+      - "tests/**"
+      - "base/ingestion-service/**"
+      - "base/retrieval-agent/**"
+      - "patches/**"
+      - "start.cmd"
+      - "start.ps1"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/ci.yml"
+  push:
+    branches:
+      - main
+      - develop
+    paths: *paths
+
+jobs:
+  lock:
+    name: Lock file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv lock --check
+
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev --python 3.12
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  test:
+    name: Native core and patched WebUI contracts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev --python 3.12
+      - name: Prepare pinned WebUI source and verify patch chain
+        shell: pwsh
+        run: ./scripts/prepare-webui.ps1
+      - run: uv run pytest -q --junitxml=.local-run/ci-core.xml
+      - name: Confirm native Windows symlink coverage without fallback
+        shell: pwsh
+        run: |
+          @'
+          import xml.etree.ElementTree as ET
+          cases = [case for case in ET.parse('.local-run/ci-core.xml').iter('testcase')
+                   if case.get('classname', '').endswith('test_native_symlink_boundaries')]
+          assert len(cases) == 7, 'Expected all seven native filesystem boundary cases'
+          assert all(all(case.find(tag) is None for tag in ('failure', 'error', 'skipped'))
+                     for case in cases), 'Native Windows symlink cases must pass, not skip'
+          print('Windows native symlink boundaries: 7/7 passed; no skips or junction fallback')
+          '@ | uv run python -
+
+  webui:
+    name: Patched browser components
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare pinned WebUI source
+        shell: pwsh
+        run: ./scripts/prepare-webui.ps1
+      - name: Install pinned browser dependencies without executable lifecycle hooks
+        working-directory: webui
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        env:
+          CYPRESS_INSTALL_BINARY: '0'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - run: node scripts/check-webui.mjs
+
+  rag-services:
+    name: RAG service regression (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [ingestion-service, retrieval-agent]
+    defaults:
+      run:
+        working-directory: base/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --extra dev --python 3.12
+      - run: uv run pytest -q
+
+  npm-audit:
+    name: Known frontend vulnerabilities (critical)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare pinned WebUI source
+        shell: pwsh
+        run: ./scripts/prepare-webui.ps1
+      # high 级别的剩余项需要上游框架主版本升级，已在 docs/acceptance/security-audit.md 记录；
+      # 这里只拦截新出现的 critical。
+      - name: Audit production dependencies
+        working-directory: webui
+        run: npm audit --omit=dev --audit-level=critical
+
+  dependency-audit:
+    name: Known Python vulnerabilities (${{ matrix.scope }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scope: [core, ingestion, retrieval, webui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - shell: pwsh
+        run: ./scripts/audit-dependencies.ps1 -Scope ${{ matrix.scope }}
