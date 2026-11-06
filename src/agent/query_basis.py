@@ -1,0 +1,57 @@
+"""执行前，要求谓词中的直接字面量能在当前请求里找到依据。
+
+这是额外的正确性检查，不是 SQL 授权，也不是通用的自然语言等价证明；计算表达式仍需语义审查，
+数据访问的权威仍是源视图和只读防护。
+"""
+
+import re
+import unicodedata
+from decimal import Decimal, InvalidOperation
+
+import sqlglot
+from sqlglot import exp
+
+
+def require_filter_basis(value, prompt: str, *, tenant_id: str = "") -> None:
+    """要求单个筛选字面量能在当前问题中找到依据，否则抛出 ValueError；等于已授权租户 ID 的值直接放行。"""
+    text = unicodedata.normalize("NFKC", prompt).casefold()
+    literal = unicodedata.normalize("NFKC", str(value)).casefold()
+    if literal == tenant_id.casefold() and tenant_id:
+        return  # 已由服务器授权的身份，无法借此选择其他范围。
+    try:
+        number = Decimal(literal)
+    except InvalidOperation:
+        literal = literal.strip("%_")  # LIKE 通配符不属于业务值。
+        pattern = re.escape(literal)
+        if literal.isascii():
+            pattern = rf"(?<![a-z0-9_]){pattern}(?![a-z0-9_])"
+        supported = bool(literal and re.search(pattern, text))
+    else:
+        supported = number in {
+            Decimal(raw) for raw in re.findall(r"(?<![0-9.])-?\d+(?:\.\d+)?(?![0-9.])", text)
+        }
+    if not supported:
+        raise ValueError(
+            "筛选值没有当前问题中的直接依据，未执行查询。"
+            "不要添加用户未要求的状态、日期或其他筛选；如确有歧义，请先明确具体条件。"
+        )
+
+
+def require_query_filter_basis(sql: str, prompt: str, *, tenant_id: str = "") -> None:
+    """遍历 SQL 的 WHERE/HAVING 谓词，对其中的直接字面量逐一调用 require_filter_basis；这不是 SQL 授权检查。"""
+    tree = sqlglot.parse_one(sql, read="sqlite")
+    comparisons = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Like, exp.ILike)
+    for clause in tree.find_all(exp.Where, exp.Having):
+        for predicate in clause.walk():
+            values = []
+            if isinstance(predicate, comparisons) and predicate.find(exp.Column):
+                values = [predicate.this, predicate.expression]
+            elif isinstance(predicate, exp.In) and isinstance(predicate.this, exp.Column):
+                values = list(predicate.expressions)
+            elif isinstance(predicate, exp.Between) and isinstance(predicate.this, exp.Column):
+                values = [predicate.args["low"], predicate.args["high"]]
+            for value in values:
+                if isinstance(value, exp.Literal):
+                    require_filter_basis(value.this, prompt, tenant_id=tenant_id)
+                elif isinstance(value, exp.Neg) and isinstance(value.this, exp.Literal):
+                    require_filter_basis("-" + value.this.this, prompt, tenant_id=tenant_id)
