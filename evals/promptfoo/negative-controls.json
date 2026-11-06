@@ -1,0 +1,124 @@
+{
+  "description": "Intentional wrong-number and missing-field controls; expected failures",
+  "prompts": [
+    "{{answer}}"
+  ],
+  "providers": [
+    "echo"
+  ],
+  "tests": [
+    {
+      "description": "joined-business-answer",
+      "metadata": {
+        "evidence": "recorded_synthetic_frontend_output",
+        "chat_id": "08be116c-aa8d-4d75-8c14-86b73fda499a",
+        "message_id": "177ed737-7765-4104-ad79-c614faf0b9ab",
+        "fresh_model_call": false
+      },
+      "vars": {
+        "answer": "已在当前授权范围内核验以下结果。\n\n**业务明细 [DB3]**\n\n| order_id | item_id | price |\n| --- | --- | --- |\n| JA-001 | JAI-001 | 40.0 |\n| JA-001 | JAI-002 | 60.0 |\n| JA-002 | JAI-003 | 200.0 |\n查询返回行数：3。业务指标另列，二者口径独立。\n\n**业务明细 [DB4]**\n\n| order_id | item_id | price | amount |\n| --- | --- | --- | --- |\n| JA-001 | JAI-001 | 40.0 | 100.0 |\n| JA-001 | JAI-002 | 60.0 | 100.0 |\n| JA-002 | JAI-003 | 200.0 | 200.0 |\n查询返回行数：3。业务指标另列，二者口径独立。\n\n**本轮文档原文依据**\n\n[KB1] policy-v1.md.txt\n\n> # 验收企业制度 v3\n> \n> 销售一部的客户折扣上限为 6%。审批负责人为陈经理。制度校验码：POLICY_UI_V2_937。\n> \n> 本次演示更新标识：NATIVE_UI_V3_20261029。此文档为合成验收材料，不包含真实业务信息。\n\n**已核验业务指标**\n\n| 指标 | 数值 | 单位 | 指标ID | 业务视图 | 依据 |\n| --- | --- | --- | --- | --- | --- |\n| 订单数 | 2 | orders | order_count | orders | DB1 |\n| 订单总金额 | 300.0 | 未定义 | missing_total | orders | DB1 |\n| 商品行数 | 3 | items | item_count | items | DB2 |"
+      },
+      "assert": [
+        {
+          "type": "contains",
+          "value": "order_count"
+        },
+        {
+          "type": "contains",
+          "value": "order_total"
+        },
+        {
+          "type": "contains",
+          "value": "item_count"
+        },
+        {
+          "type": "contains",
+          "value": "6%"
+        },
+        {
+          "type": "contains",
+          "value": "陈经理"
+        },
+        {
+          "type": "contains",
+          "value": "KB1"
+        },
+        {
+          "type": "contains",
+          "value": "DB1"
+        },
+        {
+          "type": "contains",
+          "value": "DB2"
+        },
+        {
+          "type": "contains",
+          "value": "| JA-001 | JAI-001 | 40.0 | 100.0 |"
+        },
+        {
+          "type": "contains",
+          "value": "| JA-002 | JAI-003 | 200.0 | 200.0 |"
+        },
+        {
+          "type": "not-contains",
+          "value": "未完成："
+        },
+        {
+          "type": "contains",
+          "value": "| 订单数 | 2 | orders | order_count | orders | DB1 |"
+        },
+        {
+          "type": "contains",
+          "value": "| 订单总金额 | 300.0 | 未定义 | order_total | orders | DB1 |"
+        },
+        {
+          "type": "contains",
+          "value": "| 商品行数 | 3 | items | item_count | items | DB2 |"
+        }
+      ]
+    },
+    {
+      "description": "verified-discount-quote",
+      "metadata": {
+        "evidence": "recorded_synthetic_frontend_output",
+        "chat_id": "688cfe07-6a98-455c-b303-01d105aed820",
+        "message_id": "e6789420-b397-4fd9-85e0-b600a6926439",
+        "fresh_model_call": false
+      },
+      "vars": {
+        "answer": "已在当前授权范围内核验以下结果。\n\n**折扣报价 [TOOL1]**\n\n总金额：2000.00。\n\n折扣比例：6%。\n\n优惠金额：120.00。\n\n折后金额：1881.00。\n\n金额依据：DB1.total_amount；比例依据：KB1。\n\n**本轮文档原文依据**\n\n[KB1] policy-v1.md.txt\n\n> # 验收企业制度 v3\n> \n> 销售一部的客户折扣上限为 6%。审批负责人为陈经理。制度校验码：POLICY_UI_V2_937。\n> \n> 本次演示更新标识：NATIVE_UI_V3_20261029。此文档为合成验收材料，不包含真实业务信息。"
+      },
+      "assert": [
+        {
+          "type": "contains",
+          "value": "总金额：2000.00"
+        },
+        {
+          "type": "contains",
+          "value": "折扣比例：6%"
+        },
+        {
+          "type": "contains",
+          "value": "优惠金额：120.00"
+        },
+        {
+          "type": "contains",
+          "value": "折后金额：1880.00"
+        },
+        {
+          "type": "contains",
+          "value": "DB1.total_amount"
+        },
+        {
+          "type": "contains",
+          "value": "KB1"
+        },
+        {
+          "type": "not-contains",
+          "value": "未完成："
+        }
+      ]
+    }
+  ],
+  "sharing": false
+}
