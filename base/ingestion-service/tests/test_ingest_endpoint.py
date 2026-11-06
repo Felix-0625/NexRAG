@@ -1,0 +1,822 @@
+"""Endpoint behaviour: dispatch on Content-Type, error mapping, idempotency contract."""
+
+from io import BytesIO
+from unittest.mock import patch
+
+import pytest
+
+
+async def test_json_mode_happy_path(client, api_headers, tmp_path):
+    """JSON body fetches via S3, runs pipeline, returns chunks count."""
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch(
+            "app.routes.ingest.fetch_object_to_tempfile",
+            return_value=fake_local,
+        ),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(42, None)) as run_mock,
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/report.pdf",
+                "file_id": "abc",
+                "filename": "report.pdf",
+                "collection_name": "file-abc",
+                "collection_type": "file",
+                "user_id": "u-1",
+                "overwrite": True,
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"status": True, "collection_name": "file-abc", "chunks_count": 42}
+
+    # Confirm the meta we passed through is what reaches the pipeline.
+    args, _ = run_mock.call_args
+    _path_arg, meta_arg = args
+    assert meta_arg["file_id"] == "abc"
+    assert meta_arg["collection_name"] == "file-abc"
+    assert meta_arg["collection_type"] == "file"
+    assert meta_arg["user_id"] == "u-1"
+    assert meta_arg["overwrite"] is True
+    assert meta_arg["name"] == "report.pdf"
+    assert meta_arg["source"] == "report.pdf"
+
+
+async def test_response_carries_extraction_info(client, api_headers, tmp_path):
+    """When the pipeline reports an auto-routing decision, it surfaces on the
+    response under ``extraction`` (engine + route signal/metrics)."""
+    fake_local = str(tmp_path / "fake.docx")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"PK-fake")
+
+    extraction = {"engine": "hybrid-diagram", "route": {"signal": "textbox", "ratio": 8.33}}
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch(
+            "app.routes.ingest.run_indexing_pipeline",
+            return_value=(5, extraction),
+        ),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/flow.docx",
+                "file_id": "abc",
+                "filename": "flow.docx",
+                "collection_name": "file-abc",
+                "collection_type": "file",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["chunks_count"] == 5
+    assert body["extraction"]["engine"] == "hybrid-diagram"
+    assert body["extraction"]["route"]["signal"] == "textbox"
+
+
+async def test_json_mode_missing_s3_reference(client, api_headers):
+    """JSON without s3_bucket/s3_key returns 400 with INVALID_REQUEST code."""
+    response = await client.put(
+        "/api/v1/ingest",
+        json={
+            "file_id": "abc",
+            "filename": "report.pdf",
+            "collection_name": "file-abc",
+            "user_id": "u-1",
+        },
+        headers=api_headers,
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "INVALID_REQUEST"
+
+
+async def test_multipart_mode_happy_path(client, api_headers):
+    """Multipart body streams to a tempfile and runs the pipeline."""
+    files = {
+        "file": ("report.pdf", BytesIO(b"%PDF-fake"), "application/pdf"),
+    }
+    data = {
+        "file_id": "abc",
+        "filename": "report.pdf",
+        "collection_name": "file-abc",
+        "collection_type": "file",
+        "user_id": "u-1",
+        "overwrite": "true",
+    }
+
+    with patch("app.routes.ingest.run_indexing_pipeline", return_value=(7, None)) as run_mock:
+        response = await client.put("/api/v1/ingest", files=files, data=data, headers=api_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"status": True, "collection_name": "file-abc", "chunks_count": 7}
+
+    args, _ = run_mock.call_args
+    path_arg, meta_arg = args
+    # multipart writes to a real tempfile that exists at call time
+    assert path_arg.endswith(".pdf")
+    assert meta_arg["file_id"] == "abc"
+
+
+async def test_unsupported_content_type(client, api_headers):
+    response = await client.put(
+        "/api/v1/ingest",
+        content=b"raw bytes",
+        headers={**api_headers, "Content-Type": "text/plain"},
+    )
+    assert response.status_code == 415
+    detail = response.json()["detail"]
+    assert detail["code"] == "INVALID_REQUEST"
+
+
+async def test_s3_fetch_failure_maps_to_s3_fetch_failed(client, api_headers):
+    """Without DEBUG, exception text is redacted; only the code is informative."""
+    with patch(
+        "app.routes.ingest.fetch_object_to_tempfile",
+        side_effect=RuntimeError("connection refused to internal-host.local:9000"),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "missing.pdf",
+                "file_id": "abc",
+                "filename": "missing.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["code"] == "S3_FETCH_FAILED"
+    # Generic message; no internal hostname leak.
+    assert "internal-host.local" not in detail["error"]
+    assert detail["error"] == "S3 object fetch failed."
+
+
+async def test_error_detail_reflects_exc_when_debug(client, api_headers, monkeypatch):
+    """With DEBUG=True, str(exc) is reflected for operator triage."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "debug", True)
+
+    with patch(
+        "app.routes.ingest.fetch_object_to_tempfile",
+        side_effect=RuntimeError("connection refused to internal-host.local:9000"),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "missing.pdf",
+                "file_id": "abc",
+                "filename": "missing.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+    detail = response.json()["detail"]
+    assert detail["code"] == "S3_FETCH_FAILED"
+    assert "internal-host.local" in detail["error"]
+
+
+async def test_pipeline_failure_maps_to_classified_error(client, api_headers, tmp_path):
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch(
+            "app.routes.ingest.fetch_object_to_tempfile",
+            return_value=fake_local,
+        ),
+        patch(
+            "app.routes.ingest.run_indexing_pipeline",
+            side_effect=RuntimeError("Kreuzberg converter timeout"),
+        ),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "x.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["code"] == "EXTRACTION_FAILED"
+    assert detail["status"] is False
+
+
+# ---------------------------------------------------------------------------
+# Helper unit tests — exercise the private helpers directly so we don't have
+# to round-trip a full request to cover one-line branches.
+# ---------------------------------------------------------------------------
+
+
+def test_form_bool_passes_through_bool():
+    """`_form_bool` accepts a real bool without re-parsing it as a string."""
+    from app.routes.ingest import _form_bool
+
+    assert _form_bool(True) is True
+    assert _form_bool(False) is False
+
+
+def test_form_bool_parses_known_strings():
+    from app.routes.ingest import _form_bool
+
+    assert _form_bool("true") is True
+    assert _form_bool("Yes") is True
+    assert _form_bool("0") is False
+    assert _form_bool("false") is False
+
+
+def test_form_bool_rejects_unknown_values():
+    """A typo'd overwrite value must be a 400, not a silent False — silently
+    disabling overwrite breaks the delete-then-write idempotency contract."""
+    from fastapi import HTTPException
+
+    from app.routes.ingest import _form_bool
+
+    with pytest.raises(HTTPException) as exc_info:
+        _form_bool("ture")
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == "INVALID_REQUEST"
+
+
+async def test_multipart_invalid_overwrite_rejected(client, api_headers):
+    """Unparseable overwrite form value returns 400 before the pipeline runs."""
+    files = {"file": ("report.pdf", BytesIO(b"%PDF-fake"), "application/pdf")}
+    data = {
+        "file_id": "abc",
+        "filename": "report.pdf",
+        "collection_name": "file-abc",
+        "user_id": "u-1",
+        "overwrite": "bogus",
+    }
+
+    with patch("app.routes.ingest.run_indexing_pipeline") as run_mock:
+        response = await client.put("/api/v1/ingest", files=files, data=data, headers=api_headers)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    run_mock.assert_not_called()
+
+
+async def test_multipart_whitespace_required_field_rejected(client, api_headers):
+    """A whitespace-only required form field is rejected like a missing one."""
+    files = {"file": ("report.pdf", BytesIO(b"%PDF-fake"), "application/pdf")}
+    data = {
+        "file_id": "   ",
+        "filename": "report.pdf",
+        "collection_name": "file-abc",
+        "user_id": "u-1",
+    }
+
+    with patch("app.routes.ingest.run_indexing_pipeline") as run_mock:
+        response = await client.put("/api/v1/ingest", files=files, data=data, headers=api_headers)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    run_mock.assert_not_called()
+
+
+async def test_json_whitespace_file_id_rejected(client, api_headers):
+    """str_strip_whitespace + min_length: ' ' can't satisfy a required field."""
+    response = await client.put(
+        "/api/v1/ingest",
+        json={
+            "s3_bucket": "openwebui",
+            "s3_key": "x.pdf",
+            "file_id": "   ",
+            "filename": "x.pdf",
+            "collection_name": "file-abc",
+            "user_id": "u-1",
+        },
+        headers=api_headers,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+
+
+async def test_json_unknown_field_rejected(client, api_headers):
+    """extra='forbid': a typo'd field name is a 400, not a silent no-op."""
+    response = await client.put(
+        "/api/v1/ingest",
+        json={
+            "s3_bucket": "openwebui",
+            "s3_key": "x.pdf",
+            "file_id": "abc",
+            "filename": "x.pdf",
+            "collection_name": "file-abc",
+            "user_id": "u-1",
+            "collection_nam": "typo",
+        },
+        headers=api_headers,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+
+
+# ---------------------------------------------------------------------------
+# Error-outcome metrics: every failed request increments ingest_requests_total
+# with the IngestError.code — including failures before the pipeline runs.
+# ---------------------------------------------------------------------------
+
+
+async def test_error_counter_increments_on_s3_failure(client, api_headers):
+    from prometheus_client import REGISTRY
+
+    label = {"outcome": "error", "code": "S3_FETCH_FAILED"}
+    before = REGISTRY.get_sample_value("ingest_requests_total", label) or 0.0
+
+    with patch(
+        "app.routes.ingest.fetch_object_to_tempfile",
+        side_effect=RuntimeError("connection refused"),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "x.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 500
+    after = REGISTRY.get_sample_value("ingest_requests_total", label)
+    assert after == before + 1
+
+
+async def test_error_counter_increments_on_validation_reject(client, api_headers):
+    from prometheus_client import REGISTRY
+
+    label = {"outcome": "error", "code": "INVALID_REQUEST"}
+    before = REGISTRY.get_sample_value("ingest_requests_total", label) or 0.0
+
+    response = await client.put(
+        "/api/v1/ingest",
+        content=b"raw bytes",
+        headers={**api_headers, "Content-Type": "text/plain"},
+    )
+
+    assert response.status_code == 415
+    after = REGISTRY.get_sample_value("ingest_requests_total", label)
+    assert after == before + 1
+
+
+async def test_pipeline_error_counted_exactly_once(client, api_headers, tmp_path):
+    """The handler counts centrally; the pipeline wrapper must not double-count."""
+    from prometheus_client import REGISTRY
+
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    label = {"outcome": "error", "code": "EXTRACTION_FAILED"}
+    before = REGISTRY.get_sample_value("ingest_requests_total", label) or 0.0
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch(
+            "app.routes.ingest.run_indexing_pipeline",
+            side_effect=RuntimeError("Kreuzberg converter timeout"),
+        ),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "x.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 500
+    after = REGISTRY.get_sample_value("ingest_requests_total", label)
+    assert after == before + 1
+
+
+# (The previous _PyPDFError / _OpenAIError stand-ins were removed alongside
+# the substring-name classifier. Real pypdf / openai classes are now used
+# directly in the typed-dispatch tests below.)
+
+
+# ---------------------------------------------------------------------------
+# S3 bucket allow-list (see Finding 1 in sec.md).
+# ---------------------------------------------------------------------------
+
+
+async def test_s3_bucket_not_in_allowlist_rejected(client, api_headers, monkeypatch):
+    """When S3_ALLOWED_BUCKETS is set, a bucket outside it returns 403."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "s3_allowed_buckets", "openwebui,knowledge")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile") as fetch_mock,
+        patch("app.routes.ingest.run_indexing_pipeline") as run_mock,
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "other-tenant-bucket",
+                "s3_key": "private/secrets.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    # Must reject before any S3 / pipeline work.
+    fetch_mock.assert_not_called()
+    run_mock.assert_not_called()
+
+
+async def test_s3_bucket_in_allowlist_allowed(client, api_headers, monkeypatch, tmp_path):
+    """A bucket in the allow-list is permitted through."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "s3_allowed_buckets", "openwebui,knowledge")
+
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(1, None)),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/x.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+
+
+async def test_empty_allowlist_skips_enforcement(client, api_headers, monkeypatch, tmp_path):
+    """Empty S3_ALLOWED_BUCKETS = no enforcement (matches startup warning behaviour)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "s3_allowed_buckets", "")
+
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(1, None)),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "anything",
+                "s3_key": "x.pdf",
+                "file_id": "abc",
+                "filename": "x.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Upload size cap (see Finding 3 in sec.md). Both the multipart file part
+# and the S3 ContentLength must be capped at settings.max_upload_bytes.
+# ---------------------------------------------------------------------------
+
+
+async def test_multipart_oversize_rejected_with_413(client, api_headers, monkeypatch):
+    """Multipart file part larger than max_upload_bytes returns 413, doesn't run pipeline."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "max_upload_bytes", 1024)  # 1 KB cap for the test
+
+    files = {"file": ("big.pdf", BytesIO(b"A" * 5_000), "application/pdf")}
+    data = {
+        "file_id": "abc",
+        "filename": "big.pdf",
+        "collection_name": "file-abc",
+        "collection_type": "file",
+        "user_id": "u-1",
+    }
+
+    with patch("app.routes.ingest.run_indexing_pipeline") as run_mock:
+        response = await client.put("/api/v1/ingest", files=files, data=data, headers=api_headers)
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    run_mock.assert_not_called()
+
+
+async def test_s3_oversize_rejected_with_413(client, api_headers, monkeypatch):
+    """S3 object with ContentLength > max_upload_bytes returns 413 before download."""
+    from app.config import settings
+    from app.services.s3 import S3ObjectTooLarge
+
+    monkeypatch.setattr(settings, "max_upload_bytes", 1024)
+
+    with (
+        patch(
+            "app.routes.ingest.fetch_object_to_tempfile",
+            side_effect=S3ObjectTooLarge("S3 object size=9999 exceeds max_upload_bytes=1024"),
+        ),
+        patch("app.routes.ingest.run_indexing_pipeline") as run_mock,
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "big.pdf",
+                "file_id": "abc",
+                "filename": "big.pdf",
+                "collection_name": "file-abc",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    run_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Collection-name binding (defense in depth — see Finding 2 in sec.md).
+# ---------------------------------------------------------------------------
+
+
+async def test_user_memory_collection_must_match_user_id(client, api_headers, tmp_path):
+    """user-memory-* collection_name targeting a different user_id is rejected with 403."""
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(42, None)) as run_mock,
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/m.pdf",
+                "file_id": "abc",
+                "filename": "m.pdf",
+                "collection_name": "user-memory-victim",
+                "collection_type": "memory",
+                "user_id": "attacker",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    # Pipeline must not have been invoked when the binding check fails.
+    run_mock.assert_not_called()
+
+
+async def test_user_memory_collection_matching_user_id_is_allowed(client, api_headers, tmp_path):
+    """user-memory-{uid} with matching user_id is allowed through."""
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(3, None)),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/m.pdf",
+                "file_id": "abc",
+                "filename": "m.pdf",
+                "collection_name": "user-memory-u-1",
+                "collection_type": "memory",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+
+
+async def test_file_collection_must_match_file_id(client, api_headers, tmp_path):
+    """file-* collection_name targeting a different file_id is rejected with 403."""
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(42, None)) as run_mock,
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "files/abc/report.pdf",
+                "file_id": "attacker-file",
+                "filename": "report.pdf",
+                "collection_name": "file-victim-file",
+                "collection_type": "file",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "INVALID_REQUEST"
+    run_mock.assert_not_called()
+
+
+async def test_knowledge_collection_passes_through(client, api_headers, tmp_path):
+    """Knowledge / web-search / hash-based collection names can't be locally
+    validated and are passed through (Open WebUI gates these upstream)."""
+    fake_local = str(tmp_path / "fake.pdf")
+    with open(fake_local, "wb") as fh:
+        fh.write(b"%PDF-fake")
+
+    with (
+        patch("app.routes.ingest.fetch_object_to_tempfile", return_value=fake_local),
+        patch("app.routes.ingest.run_indexing_pipeline", return_value=(5, None)),
+    ):
+        response = await client.put(
+            "/api/v1/ingest",
+            json={
+                "s3_bucket": "openwebui",
+                "s3_key": "kb/file.pdf",
+                "file_id": "abc",
+                "filename": "file.pdf",
+                "collection_name": "kb-12345",
+                "collection_type": "knowledge",
+                "user_id": "u-1",
+            },
+            headers=api_headers,
+        )
+
+    assert response.status_code == 200
+
+
+def test_classify_dispatches_on_typed_errors():
+    """Typed errors from app.pipelines.errors win over message-substring matching."""
+    from app.pipelines.errors import EmbeddingError, ExtractionError
+    from app.routes.ingest import _classify_pipeline_error
+
+    assert _classify_pipeline_error(ExtractionError("any text")) == "EXTRACTION_FAILED"
+    assert _classify_pipeline_error(EmbeddingError("any text")) == "EMBEDDING_FAILED"
+
+
+def test_classify_dispatches_on_pypdf_real_class():
+    """Real pypdf exception → EXTRACTION_FAILED (regression for sec.md Finding 5).
+
+    The old classifier checked ``"PyPDFError" in name`` which never matched
+    pypdf's actual class (``PdfReadError``)."""
+    pypdf_errors = pytest.importorskip("pypdf.errors")
+    from app.routes.ingest import _classify_pipeline_error
+
+    assert (
+        _classify_pipeline_error(pypdf_errors.PdfReadError("bad page tree")) == "EXTRACTION_FAILED"
+    )
+
+
+def test_classify_dispatches_on_openai_real_class():
+    """Real openai exception → EMBEDDING_FAILED (regression for sec.md Finding 5).
+
+    The old classifier checked ``"OpenAI" in name`` which never matched real
+    openai exception classes (``APIConnectionError``, ``RateLimitError``)."""
+    openai = pytest.importorskip("openai")
+    from app.routes.ingest import _classify_pipeline_error
+
+    assert _classify_pipeline_error(openai.OpenAIError("rate limited")) == "EMBEDDING_FAILED"
+
+
+@pytest.mark.parametrize(
+    "exc, expected",
+    [
+        # Substring fallback for Haystack-internal failures that surface
+        # as generic Exception with descriptive messages.
+        (RuntimeError("Kreuzberg converter timeout"), "EXTRACTION_FAILED"),
+        (RuntimeError("could not extract pages"), "EXTRACTION_FAILED"),
+        (RuntimeError("qdrant write failed"), "QDRANT_WRITE_FAILED"),
+        (RuntimeError("vector store unreachable"), "QDRANT_WRITE_FAILED"),
+        # Sparse must beat the generic embed branch.
+        (RuntimeError("sparse embed call failed"), "SPARSE_EMBEDDING_FAILED"),
+        (RuntimeError("embed endpoint returned 500"), "EMBEDDING_FAILED"),
+        # Fallback.
+        (RuntimeError("nothing recognizable here"), "PIPELINE_FAILED"),
+    ],
+)
+def test_classify_pipeline_error_substring_fallback(exc, expected):
+    """Substring matching catches Haystack-internal failures."""
+    from app.routes.ingest import _classify_pipeline_error
+
+    assert _classify_pipeline_error(exc) == expected
+
+
+def _wrap_in_pipeline_error(exc: Exception, component: str = "dense_embedder") -> Exception:
+    """Reproduce how Haystack surfaces a component failure to the route layer.
+
+    The ``raise ... from err`` matters: ``from_exception`` alone does not set
+    ``__cause__``, and Pipeline._run_component's ``from error`` clause is what
+    the unwrapping in ``_classify_pipeline_error`` follows.
+    """
+    from haystack.core.errors import PipelineRuntimeError
+
+    try:
+        try:
+            raise exc
+        except Exception as err:
+            raise PipelineRuntimeError.from_exception(component, type(object()), err) from err
+    except PipelineRuntimeError as wrapped:
+        return wrapped
+
+
+@pytest.mark.parametrize(
+    "error_name, expected",
+    [
+        ("ExtractionError", "EXTRACTION_FAILED"),
+        ("EmbeddingError", "EMBEDDING_FAILED"),
+    ],
+)
+def test_classify_unwraps_haystack_pipeline_error(error_name, expected):
+    """Haystack wraps every component exception in ``PipelineRuntimeError``, so
+    the typed dispatch only works if the cause is unwrapped first.
+
+    Without unwrapping these all fell through to ``PIPELINE_FAILED`` unless the
+    component *name* happened to contain a matching substring — which is how the
+    guard's EmbeddingError would have been mislabelled.
+    """
+    from app.pipelines import errors as error_mod
+    from app.routes.ingest import _classify_pipeline_error
+
+    exc = getattr(error_mod, error_name)("no substring hints in this text")
+    assert _classify_pipeline_error(_wrap_in_pipeline_error(exc, "stage")) == expected
+
+
+def test_classify_unwraps_openai_error_from_pipeline():
+    """A 400 from the embedding endpoint (raise_on_failure=True) arrives wrapped."""
+    openai = pytest.importorskip("openai")
+    from app.routes.ingest import _classify_pipeline_error
+
+    wrapped = _wrap_in_pipeline_error(openai.OpenAIError("400 too many input tokens"), "stage")
+    assert _classify_pipeline_error(wrapped) == "EMBEDDING_FAILED"
+
+
+def test_classify_falls_back_to_substring_for_causeless_wrapper():
+    """A wrapper with no cause still gets the layer-3 treatment."""
+    from haystack.core.errors import PipelineRuntimeError
+
+    from app.routes.ingest import _classify_pipeline_error
+
+    bare = PipelineRuntimeError("stage", dict, "embed endpoint exploded")
+    assert bare.__cause__ is None
+    assert _classify_pipeline_error(bare) == "EMBEDDING_FAILED"

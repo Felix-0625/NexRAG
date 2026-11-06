@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "search-agent"
+version = "0.0.5"
+description = "Search agent — web search pipeline powered by Pydantic AI"
+requires-python = ">=3.12"
+dependencies = [
+    # fastapi 0.136.3 added an undocumented typosquat-shaped dependency
+    # `fastar>=0.9.0` to the [standard] extra (advisory MAL-2026-4750). We
+    # don't install fastapi[standard], but the version itself is flagged —
+    # exclude it explicitly so a future `uv lock --upgrade` can't grab it.
+    "fastapi>=0.136.1,!=0.136.3,<1",
+    "uvicorn[standard]>=0.46,<1",
+    # Upper bounds cap each direct dep below its next major: `uv lock --upgrade`
+    # may take patches and minors, never a breaking major (see mcp 1.x -> 2.x,
+    # where FastMCP was renamed MCPServer). uv.lock remains the exact-version
+    # source of truth; native installs use `uv sync --frozen`.
+    #
+    # pydantic-ai-slim[openai] rather than the pydantic-ai meta-package: the
+    # code only uses `Agent` + the OpenAI model, and the meta-package's `mcp`
+    # extra dragged in a second FastMCP generation that capped `mcp<2`.
+    "pydantic-ai-slim[openai]>=1.102,<2",
+    "pydantic-settings>=2.14,<3",
+    "httpx>=0.28.1,<1",
+    "mcp>=2.1.1,<3",
+    "trafilatura>=2.0,<3",
+    "redis>=7.4,<8",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0,<10",
+    "pytest-asyncio>=1.3,<2",
+    "pytest-cov>=7.1,<8",
+    # ruff is pre-1.0 and lands rule changes in minors, so cap at the next
+    # minor — `<1` would be no cap at all and a bump could break CI lint.
+    "ruff>=0.15,<0.16",
+    "fakeredis>=2.35,<3",
+    "pip-audit>=2.10,<3",
+    "bandit>=1.9,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/search_agent"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "RUF"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

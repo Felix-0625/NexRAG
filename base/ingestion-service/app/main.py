@@ -1,0 +1,95 @@
+"""FastAPI app for the ingestion service.
+
+Lifespan: builds the Haystack pipeline once, ensures the Qdrant payload
+indexes exist, then serves requests until shutdown.
+"""
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI, Response
+from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+from app.auth import verify_api_key
+from app.config import settings
+from app.logging_config import configure_logging
+from app.pipelines.indexing import init_pipeline, is_pipeline_ready
+from app.routes.delete import router as delete_router
+from app.routes.extract import router as extract_router
+from app.routes.ingest import router as ingest_router
+from app.routes.inspect import router as inspect_router
+from app.services import qdrant_setup
+
+configure_logging(settings)
+log = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log.info("Starting ingestion service")
+    if not settings.allowed_buckets:
+        log.warning(
+            "S3_ALLOWED_BUCKETS is empty — any bucket the configured S3 credentials "
+            "can reach is fetchable. Set S3_ALLOWED_BUCKETS to lock this down."
+        )
+
+    init_pipeline()
+    qdrant_setup.ensure_payload_indexes()
+
+    yield
+
+    log.info("Ingestion service shut down")
+
+
+app = FastAPI(
+    title="Ingestion Service",
+    description="Document ingestion service for AarhusAI (Haystack v2)",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.include_router(ingest_router)
+app.include_router(extract_router)
+app.include_router(inspect_router)
+app.include_router(delete_router)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics(_api_key: str = Depends(verify_api_key)):
+    """Prometheus scrape endpoint.
+
+    Bearer-authenticated with the same ``API_KEY`` as ``/api/v1/ingest`` (mirrors
+    retrieval-agent) — the scrape job must send ``Authorization: Bearer <API_KEY>``.
+    Returns 404 when ``METRICS_ENABLED=false``; instrumentation runs regardless.
+    """
+    if not settings.metrics_enabled:
+        return JSONResponse(status_code=404, content={"detail": "metrics disabled"})
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness probe — verifies Qdrant connectivity AND pipeline warm-up.
+
+    Returns 503 until ``init_pipeline()`` has finished (and the sparse
+    embedder has downloaded its model). The native launcher waits for this
+    readiness signal during the first cold-start while
+    fastembed pulls the ~80 MB BM42 model from HuggingFace.
+    """
+    if not is_pipeline_ready():
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "detail": "pipeline not warmed up yet"},
+        )
+    if not qdrant_setup.health_check():
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "detail": "qdrant unreachable"},
+        )
+    return {"status": "ok"}

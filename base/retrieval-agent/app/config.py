@@ -1,0 +1,189 @@
+from pydantic import field_validator
+from pydantic_settings import BaseSettings
+
+# Long enough that the placeholders that historically shipped in
+# old configuration defaults ("change_me", "secret", ...) are all rejected.
+_MIN_API_KEY_LENGTH = 32
+_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+class Settings(BaseSettings):
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+    # Auth
+    api_key: str
+
+    @field_validator("api_key")
+    @classmethod
+    def _reject_weak_api_key(cls, v: str) -> str:
+        if len(v.strip()) < _MIN_API_KEY_LENGTH:
+            raise ValueError(f"API_KEY must be at least {_MIN_API_KEY_LENGTH} characters")
+        return v
+
+    # Qdrant — single physical collection populated by the ingestion service.
+    # The legacy multitenancy mapping (one physical collection per Open WebUI
+    # collection class) was retired in Phase 3 alongside the schema change.
+    qdrant_uri: str = "http://qdrant:6333"
+    qdrant_api_key: str | None = None
+    qdrant_index: str = "ingestion_files"
+
+    # Embedding (OpenAI-compatible API).
+    # embedding_prefix_query must match what the ingestion service used at index
+    # time (e5: "query: " on queries / "passage: " on docs; bge-m3: none).
+    embedding_model: str = "intfloat/multilingual-e5-large"
+    embedding_api_base_url: str = ""
+    embedding_api_key: str = ""
+    embedding_prefix_query: str = "query: "
+
+    @field_validator("embedding_api_base_url")
+    @classmethod
+    def _require_embedding_base_url(cls, v: str) -> str:
+        # Every pipeline embeds queries; an empty base URL only fails at the
+        # first search with an obscure httpx error. Refuse to boot instead.
+        if not v.strip():
+            raise ValueError("EMBEDDING_API_BASE_URL must be set (no usable default exists)")
+        return v
+
+    # Hybrid search. When enabled, retrieval uses native Qdrant hybrid (Query API
+    # with prefetch + RRF fusion) for collections that carry sparse vectors, and
+    # falls back to client-side BM25 RRF for collections that don't.
+    enable_hybrid_search: bool = False
+    hybrid_bm25_weight: float = 0.3
+    bm25_cache_ttl_seconds: int = 300
+    # Hard cap on documents pulled into the in-memory BM25 index per
+    # collection scope. Protects the process from OOM when a logical
+    # collection has unexpectedly grown.
+    bm25_max_docs: int = 10_000
+
+    # Sparse query embedder (used when hybrid is enabled and the configured
+    # Qdrant collection has a sparse named vector). Must match the model the
+    # ingestion service used for sparse indexing.
+    sparse_query_provider: str = "fastembed"  # fastembed | none
+    sparse_query_model: str = "Qdrant/bm42-all-minilm-l6-v2-attentions"
+    # Keep the query model in a writable, persistent cache outside the image.
+    fastembed_cache_dir: str = ""
+
+    # Reranking: the existing HTTP API or local FastEmbed cross-encoder.
+    enable_reranking: bool = False
+    reranker_provider: str = "http"  # http | fastembed
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_api_base_url: str = ""
+    reranker_api_key: str = ""
+    reranker_threads: int = 2
+    # NexRAG's final cross-encoder stage selects leaves BEFORE parent expansion.
+    # Scores are model-dependent, not calibrated probabilities: tune on held-out
+    # target-language documents when changing the checkpoint or corpus.
+    rerank_top_k: int = 3
+    rerank_min_score: float = 0.05
+    rerank_required: bool = False
+
+    @field_validator("rerank_top_k")
+    @classmethod
+    def _validate_rerank_top_k(cls, value: int) -> int:
+        if not 1 <= value <= 20:
+            raise ValueError("RERANK_TOP_K must be between 1 and 20")
+        return value
+
+    @field_validator("rerank_min_score")
+    @classmethod
+    def _validate_rerank_min_score(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("RERANK_MIN_SCORE must be between 0 and 1")
+        return value
+
+    @field_validator("reranker_provider")
+    @classmethod
+    def _validate_reranker_provider(cls, value: str) -> str:
+        if value not in {"http", "fastembed"}:
+            raise ValueError("RERANKER_PROVIDER must be http or fastembed")
+        return value
+
+    @field_validator("reranker_threads")
+    @classmethod
+    def _validate_reranker_threads(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("RERANKER_THREADS must be non-negative")
+        return value
+
+    # How the cross-encoder ranking combines with the retrieval (dense/hybrid)
+    # ranking. "rrf" = Reciprocal Rank Fusion — keeps a strong dense hit that the
+    # cross-encoder underranks; "replace" = cross-encoder score only (the older
+    # behaviour, where the reranker can bury a top dense hit).
+    rerank_fusion: str = "rrf"
+    rerank_rrf_k: int = 60
+    initial_retrieval_multiplier: int = 3
+    # Fetch extra leaves before restoring parent text so siblings from one
+    # parent do not consume every result slot. One preserves legacy behavior.
+    parent_candidate_multiplier: int = 1
+
+    @field_validator("parent_candidate_multiplier")
+    @classmethod
+    def _validate_parent_candidate_multiplier(cls, value: int) -> int:
+        if not 1 <= value <= 10:
+            raise ValueError("PARENT_CANDIDATE_MULTIPLIER must be between 1 and 10")
+        return value
+
+    # Query generation (from messages, for linear pipeline; agentic uses system prompt)
+    enable_query_generation: bool = True
+    retrieval_query_generation_prompt_template: str = ""
+
+    # Agentic RAG
+    enable_agentic_rag: bool = False
+    agent_model: str = "gpt-4o-mini"
+    agent_api_base_url: str = "http://litellm:4000/v1"
+    agent_api_key: str = ""
+    agent_max_iterations: int = 3
+    agent_tool_preview_chars: int = 200
+    agent_strict_tools: bool = True
+    agent_timeout: int = 60
+    agent_system_prompt: str = ""
+    # Agentic recall (decoupled from request.k to widen recall without
+    # blowing the agent LLM's context window).
+    agent_fetch_k: int = 20
+    agent_preview_k: int = 5
+    agent_conversation_history_messages: int = 4
+    # Always run a deterministic retrieval pass with the user's original query
+    # (seeded before the agent loop) so recall doesn't depend on how the agent
+    # rewrites the question. Merged with the agent's retrievals downstream.
+    agent_include_raw_query: bool = True
+
+    # ----- Observability -----
+    # LOG_LEVEL is the primary verbosity dial, applied to the root logger (so
+    # third-party libs follow it too). LOG_FORMAT picks human-readable vs JSON
+    # (one object per line, for Loki / a structured-log pipeline). METRICS_ENABLED
+    # gates only the GET /metrics endpoint — instrumentation always runs.
+    log_level: str = "INFO"
+    log_format: str = "text"
+    metrics_enabled: bool = True
+
+    @field_validator("log_format")
+    @classmethod
+    def _validate_log_format(cls, v: str) -> str:
+        lower = v.lower()
+        if lower not in {"text", "json"}:
+            raise ValueError(f"LOG_FORMAT must be 'text' or 'json'; got {v!r}")
+        return lower
+
+    # Per-namespace override for the service's own loggers ('app.*'), applied on
+    # top of LOG_LEVEL. Set to DEBUG to see verbose app logs without the
+    # third-party DEBUG flood (httpcore/httpx/openai). Empty = inherit the root.
+    log_level_app: str = ""
+
+    @field_validator("log_level", "log_level_app")
+    @classmethod
+    def _validate_log_level(cls, v: str, info) -> str:
+        # Empty is only meaningful for LOG_LEVEL_APP (= inherit the root level).
+        if not v and info.field_name == "log_level_app":
+            return ""
+        if v.upper() not in _LOG_LEVELS:
+            raise ValueError(
+                f"{info.field_name.upper()} must be one of {sorted(_LOG_LEVELS)}; got {v!r}"
+            )
+        return v.upper()
+
+    # Server
+    host: str = "127.0.0.1"  # Local-only default; deployments must opt into other interfaces.
+    port: int = 8000
+
+
+settings = Settings()

@@ -1,0 +1,142 @@
+# Search Agent (optional upstream reference)
+
+NexRAG does not start this independent multi-agent service. Its single Agent uses the core authorized web-search tool; this reference is retained with its own license for maintainers. No Redis service is required by native NexRAG.
+
+A FastAPI service that implements a 3-stage web search pipeline using [Pydantic AI](https://ai.pydantic.dev/) agents and a pluggable search backend — [SearXNG](https://docs.searxng.org/) (default) or [Staan Web for AI](https://docs.staan.ai/docs/web-for-ai). Also exposes search as an [MCP](https://modelcontextprotocol.io/) tool for integration with LLM-powered applications (e.g. Open WebUI).
+
+## Architecture
+
+```mermaid
+flowchart TD
+    Req([SearchRequest<br/>query, context, no_cache])
+    Planner[Query Planner<br/>LLM · skipped for simple queries]
+    Search[Search Executor<br/>SearXNG · concurrent · deduped]
+    Fetch[Fetch &amp; Extract<br/>optional · trafilatura]
+    Synth[Analyze + Synthesize<br/>LLM · cited summary]
+    Resp([SearchResult<br/>summary, sources])
+
+    Req --> Planner --> Search --> Fetch --> Synth --> Resp
+
+    subgraph Redis["Redis cache — fail-open · bypass via no_cache=true"]
+      direction TB
+      CP[("planner:v1<br/>key: normalized query + context + YYYY-MM-DD<br/>TTL 6h")]
+      CS[("searxng:v1<br/>key: normalized query + searxng_url<br/>TTL 5min")]
+      CF[("fetch:v1<br/>key: url + max_chars<br/>TTL 1h hit / 5min miss")]
+    end
+
+    Planner <-.-> CP
+    Search <-.-> CS
+    Fetch <-.-> CF
+```
+
+See the [Caching](#caching) section below for fail-open semantics, bypass behaviour, and backend choices.
+
+### Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/health` | GET | Health check. Pass `?deep=true` to also verify SearXNG connectivity. |
+| `/api/v1/search` | POST | Run the full search pipeline. Accepts `{"query": "...", "context": "...", "no_cache": false}`. Set `no_cache: true` to bypass Redis and force a fresh run. |
+| `/mcp` | POST | MCP Streamable HTTP transport (the MCP app is mounted at `/`, the transport itself is served at `/mcp`). Exposes `search_web` tool (steps 1+2 only, no LLM synthesis). |
+
+## Native reference development
+
+From this directory, Python 3.12 and uv can run the independent reference:
+
+```shell
+uv sync --frozen
+uv run pytest -q
+```
+
+Its own LLM/search endpoints must be explicitly provisioned for standalone
+experiments. Set `SEARCH_AGENT_CACHE_BACKEND=disabled` to avoid an optional
+cache service. These settings do not configure the NexRAG enterprise Agent.
+
+## Configuration
+
+All environment variables use the `SEARCH_AGENT_` prefix (via pydantic-settings).
+
+| Variable | Default | Description |
+|---|---|---|
+| `SEARCH_AGENT_DEBUG` | `false` | Enables DEBUG-level logging across `search_agent` + `pydantic_ai` (full agent prompts, outputs, and the SearXNG engine list per query). Does **not** enable `httpx` DEBUG (which would leak `Authorization` headers). |
+| `SEARCH_AGENT_LLM_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible LLM endpoint |
+| `SEARCH_AGENT_LLM_API_KEY` | `not-needed` | API key for the LLM |
+| `SEARCH_AGENT_LLM_MODEL` | `llama3` | Model name |
+| `SEARCH_AGENT_LLM_STRICT_TOOLS` | `true` | OpenAI strict tool definitions. Set to `false` for models that don't support it (e.g. Mistral). |
+| `SEARCH_AGENT_LLM_TIMEOUT` | `60` | LLM request timeout (seconds) |
+| `SEARCH_AGENT_SEARCH_PROVIDER` | `searxng` | Search backend: `searxng` (self-hosted) or `staan` ([Staan Web for AI](https://docs.staan.ai/docs/web-for-ai)) |
+| `SEARCH_AGENT_SEARXNG_URL` | `http://searxng:8080` | SearXNG instance URL |
+| `SEARCH_AGENT_SEARXNG_TIMEOUT` | `15` | SearXNG request timeout (seconds) |
+| `SEARCH_AGENT_STAAN_API_KEY` | *(empty)* | **Required when provider is `staan`** — startup fails without it. Never logged. |
+| `SEARCH_AGENT_STAAN_URL` | `https://api.staan.ai` | Staan API base URL |
+| `SEARCH_AGENT_STAAN_MARKET` | `en-us` | Market/locale for Staan searches (e.g. `da-dk`) |
+| `SEARCH_AGENT_STAAN_TIMEOUT` | `10` | Staan request timeout (seconds); docs recommend 8–10s with enrichment |
+| `SEARCH_AGENT_STAAN_ENRICHMENT` | `full_content` | `full_content` (full page body as markdown per result), `extra_snippets` (semantically scored chunks), or `none` (snippets only) |
+| `SEARCH_AGENT_STAAN_MAX_SNIPPETS` | `3` | Max chunks per result (`extra_snippets` mode only, 1–10) |
+| `SEARCH_AGENT_STAAN_MIN_SCORE` | `0.1` | Min chunk relevance (`extra_snippets` mode only, 0–1) |
+| `SEARCH_AGENT_STAAN_CONTENT_MAX_CHARS` | `5000` | Per-result cap on enrichment text mapped into `content` |
+| `SEARCH_AGENT_STAAN_CONTENT_MAX_RESULTS` | `5` | Only the top N (reranked) results keep `content`; the rest stay snippet-only. Enforced globally across all planner queries, so it bounds the whole synthesizer prompt (not each query). Together with the char cap this keeps the prompt inside the LLM context window. |
+| `SEARCH_AGENT_STAAN_MAX_RESPONSE_BYTES` | `10000000` | Max bytes read from a Staan response before the read is aborted. Larger than the SearXNG cap because `full_content` returns whole page bodies per result. |
+| `SEARCH_AGENT_SEARCH_PIPELINE_TIMEOUT` | `90` | Overall pipeline timeout (seconds) |
+| `SEARCH_AGENT_DATETIME_TIMEZONE` | `UTC` | Timezone for date/time in query planner prompts |
+| `SEARCH_AGENT_DATETIME_FORMAT` | `%A, %B %-d, %Y, %H:%M %Z` | Date format string |
+| `SEARCH_AGENT_MCP_ALLOWED_HOSTS` | `["search-agent:8001","localhost:8001"]` | `Host` header allowlist for the MCP transport (DNS-rebinding protection); a mismatch returns 421 |
+| `SEARCH_AGENT_SEARCH_SKIP_PLANNER_FOR_SIMPLE_QUERIES` | `true` | Skip query planner for simple queries |
+| `SEARCH_AGENT_SEARCH_MAX_QUERIES` | `3` | Cap on how many queries the planner's output is truncated to |
+| `SEARCH_AGENT_SEARCH_MAX_RESULTS` | `15` | Max deduplicated results passed to the synthesizer / returned via MCP |
+| `SEARCH_AGENT_SEARCH_SIMPLE_QUERY_MAX_WORDS` | `15` | Word-count threshold for the simple-query heuristic |
+| `SEARCH_AGENT_SEARCH_SIMPLE_QUERY_MAX_QUESTIONS` | `1` | Max `?` count before a query is considered multi-part |
+| `SEARCH_AGENT_SEARCH_FETCH_PAGE_CONTENT` | `false` | Opt-in: fetch and extract main text from result pages (via trafilatura) so the synthesizer sees a longer `content` field in addition to the SearXNG snippet. MCP path (`search_web`) is snippet-only regardless. |
+| `SEARCH_AGENT_SEARCH_FETCH_MAX_PAGES` | `5` | When fetch is enabled, only the top N results are fetched |
+| `SEARCH_AGENT_SEARCH_FETCH_TIMEOUT` | `10` | Per-page HTTP timeout (seconds) during fetch |
+| `SEARCH_AGENT_SEARCH_FETCH_MAX_CHARS` | `5000` | Truncate extracted page text to this many characters |
+| `SEARCH_AGENT_SEARCH_FETCH_MAX_BYTES` | `2000000` | Abort a page fetch if the response exceeds this many bytes |
+| `SEARCH_AGENT_SEARCH_QUERY_PLANNER_PROMPT` | *(built-in)* | Override the query planner system prompt |
+| `SEARCH_AGENT_SEARCH_ANALYZE_SYNTHESIZE_PROMPT` | *(built-in)* | Override the analyze+synthesize system prompt |
+| `SEARCH_AGENT_CACHE_BACKEND` | `redis` | Cache backend: `redis` (production — shared across pods), `memory` (tests/dev only, per-process), or `disabled`. |
+| `SEARCH_AGENT_CACHE_REDIS_URL` | `redis://redis:6379/0` | Redis connection URL. Used only when `CACHE_BACKEND=redis`. |
+| `SEARCH_AGENT_CACHE_FETCH_TTL` | `3600` | TTL (seconds) for successful page extracts. |
+| `SEARCH_AGENT_CACHE_FETCH_NEGATIVE_TTL` | `300` | TTL (seconds) for failed/empty fetches (SSRF block, 4xx, byte-cap, empty extract) so transient failures recover quickly. |
+| `SEARCH_AGENT_CACHE_SEARXNG_TTL` | `300` | TTL (seconds) for SearXNG result lists. Short by default because engine rankings shift quickly. |
+| `SEARCH_AGENT_CACHE_STAAN_TTL` | `300` | TTL (seconds) for Staan result lists. |
+| `SEARCH_AGENT_CACHE_PLANNER_TTL` | `21600` | TTL (seconds) for cached planner outputs. The cache key includes today's date (`YYYY-MM-DD`), so entries roll daily regardless of TTL. |
+
+## Caching
+
+Three pipeline stages are cached in Redis to avoid repeating deterministic work across requests and pods:
+
+| Stage | Cache key | Positive TTL | Negative TTL |
+|---|---|---|---|
+| Query planner | `planner:v1:sha256(normalized_query + context + YYYY-MM-DD)` | `CACHE_PLANNER_TTL` (6h) | not cached |
+| SearXNG search | `searxng:v1:sha256(normalized_query + searxng_url)` | `CACHE_SEARXNG_TTL` (5min) | not cached (empty results allowed to retry) |
+| Staan search | `staan:v1:sha256(normalized_query + staan_url + market + enrichment + char_cap)` | `CACHE_STAAN_TTL` (5min) | not cached (empty results allowed to retry) |
+| Page fetch (per URL) | `fetch:v1:sha256(url + max_chars)` | `CACHE_FETCH_TTL` (1h) | `CACHE_FETCH_NEGATIVE_TTL` (5min) |
+
+**Fail-open:** every cache operation is wrapped so that Redis errors or timeouts (300ms socket budget) degrade to a miss and the request continues unaffected. A dead or slow Redis will never break search.
+
+**Bypass:** set `"no_cache": true` on a `/api/v1/search` request to force a fresh run. The flag only affects that request and doesn't clear existing entries.
+
+**Backend choice:** production uses `redis` so state is shared across all pods. `memory` is intentionally limited to tests and local single-pod dev — it fragments per process and defeats the shared-hit-rate goal. `disabled` is useful for debugging freshness issues.
+
+**Namespace versioning:** keys are prefixed with `:v1:` so a change to a cached value's shape (e.g. a new `RawSearchResult` field) can be invalidated by bumping the version in `src/search_agent/cache.py` instead of flushing Redis.
+
+## Development
+
+```shell
+uv run pytest -q
+uv run ruff check src tests
+```
+
+## Tech Stack
+
+- Python 3.12+
+- [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/)
+- [Pydantic AI](https://ai.pydantic.dev/) for LLM agents
+- [SearXNG](https://docs.searxng.org/) for web search
+- [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) for tool integration
+- [httpx](https://www.python-httpx.org/) for async HTTP
+- [trafilatura](https://trafilatura.readthedocs.io/) for optional main-content extraction from result pages
+- [Redis](https://redis.io/) as the shared pipeline cache (via `redis-py`)
+- [uv](https://docs.astral.sh/uv/) for package management
+- [ruff](https://docs.astral.sh/ruff/) for linting and formatting
+- [Task](https://taskfile.dev/) for task running

@@ -1,0 +1,92 @@
+"""Logging configuration (app/logging_config.py)."""
+
+import json
+import logging
+
+import pytest
+
+from app.config import Settings
+from app.logging_config import _NOISY_LOGGERS, JsonFormatter, configure_logging
+
+
+def _settings(**overrides) -> Settings:
+    base = {"api_key": "a" * 32}
+    base.update(overrides)
+    return Settings(_env_file=None, **base)
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging():
+    """configure_logging mutates the global root logger — snapshot and restore
+    so these tests don't leak state into the rest of the suite."""
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    saved_app_level = logging.getLogger("app").level
+    saved_noisy = {name: logging.getLogger(name).level for name in _NOISY_LOGGERS}
+    yield
+    root.handlers[:] = saved_handlers
+    root.setLevel(saved_level)
+    logging.getLogger("app").setLevel(saved_app_level)
+    for name, lvl in saved_noisy.items():
+        logging.getLogger(name).setLevel(lvl)
+
+
+def test_log_level_sets_root_level():
+    configure_logging(_settings(log_level="WARNING"))
+    assert logging.getLogger().level == logging.WARNING
+
+
+def test_log_level_app_overrides_app_namespace():
+    configure_logging(_settings(log_level="INFO", log_level_app="DEBUG"))
+    assert logging.getLogger("app").level == logging.DEBUG
+
+
+def test_log_level_app_empty_inherits_root():
+    configure_logging(_settings(log_level="INFO", log_level_app=""))
+    assert logging.getLogger("app").level == logging.NOTSET
+
+
+def test_debug_level_floors_noisy_loggers_to_info():
+    """At LOG_LEVEL=DEBUG the wire-noise libs stay at INFO while app goes DEBUG."""
+    configure_logging(_settings(log_level="DEBUG"))
+    # app inherits the root (NOTSET locally), so check the effective level.
+    assert logging.getLogger("app").getEffectiveLevel() == logging.DEBUG
+    for name in _NOISY_LOGGERS:
+        assert logging.getLogger(name).level == logging.INFO
+
+
+def test_floor_never_amplifies_below_root():
+    """A root quieter than the INFO floor wins — the floor only quiets."""
+    configure_logging(_settings(log_level="WARNING"))
+    for name in _NOISY_LOGGERS:
+        assert logging.getLogger(name).level == logging.WARNING
+
+
+def test_json_format_installs_json_formatter():
+    configure_logging(_settings(log_format="json"))
+    handlers = logging.getLogger().handlers
+    assert any(isinstance(h.formatter, JsonFormatter) for h in handlers)
+
+
+def test_json_formatter_emits_parseable_json_with_message():
+    rec = logging.makeLogRecord(
+        {
+            "name": "app.test",
+            "levelname": "INFO",
+            "msg": "hello %s",
+            "args": ("world",),
+        }
+    )
+    obj = json.loads(JsonFormatter().format(rec))
+    assert obj["level"] == "INFO"
+    assert obj["logger"] == "app.test"
+    assert obj["msg"] == "hello world"
+
+
+def test_json_formatter_promotes_extra_fields():
+    rec = logging.makeLogRecord(
+        {"name": "app.test", "levelname": "INFO", "msg": "x", "request_id": "abc-123"}
+    )
+    obj = json.loads(JsonFormatter().format(rec))
+    assert obj["request_id"] == "abc-123"

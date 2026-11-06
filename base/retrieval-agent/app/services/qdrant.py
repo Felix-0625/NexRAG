@@ -1,0 +1,284 @@
+"""Qdrant client + vector search.
+
+Phase 3: reads the Haystack-native schema written by the ingestion service —
+``payload.content`` for chunk text and ``payload.meta`` for metadata. Filters
+by ``meta.collection_name`` (a ``MatchAny`` over the request's logical
+collection names). All retrievable data lives in a single physical collection
+configured via ``QDRANT_INDEX``; the legacy multitenancy mapping that routed
+``file-*``, ``user-memory-*`` etc. to per-class physical collections is gone.
+
+When the configured collection has a sparse named vector (``text-sparse``),
+``vector_search`` issues a hybrid Qdrant Query API call with prefetch + RRF
+fusion. Otherwise it falls back to a dense-only query. The pipeline / agent
+layer adds client-side BM25 RRF on top when hybrid is enabled but the
+collection lacks sparse vectors.
+"""
+
+import asyncio
+import logging
+
+from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
+
+from app.config import settings
+from app.log_utils import sanitize_for_log
+from app.models import RetrievalResult
+
+log = logging.getLogger(__name__)
+
+# qdrant-haystack names the dense vector only when sparse embeddings are
+# enabled. Dense-only collections use Qdrant's unnamed default vector.
+DENSE_VECTOR_NAME = "text-dense"
+SPARSE_VECTOR_NAME = "text-sparse"
+
+
+# ---------------------------------------------------------------------------
+# Client lifecycle
+# ---------------------------------------------------------------------------
+
+_client: QdrantClient | None = None
+
+
+def get_client() -> QdrantClient:
+    global _client
+    if _client is None:
+        _client = QdrantClient(
+            url=settings.qdrant_uri,
+            api_key=settings.qdrant_api_key,
+        )
+    return _client
+
+
+def close_client() -> None:
+    global _client
+    if _client is not None:
+        _client.close()
+        _client = None
+
+
+# ---------------------------------------------------------------------------
+# Capability detection
+# ---------------------------------------------------------------------------
+
+_sparse_capable: bool | None = None
+_dense_named: bool | None = None
+
+
+def collection_exists() -> bool:
+    """True iff the configured Qdrant collection currently exists."""
+    try:
+        get_client().get_collection(settings.qdrant_index)
+        return True
+    except (UnexpectedResponse, ValueError):
+        return False
+
+
+def has_sparse_vectors() -> bool:
+    """True iff the configured collection carries a sparse named vector.
+
+    Cached for the process lifetime once a definite answer is obtained; call
+    :func:`reset_sparse_capability` after a collection recreation. If the
+    collection doesn't yet exist (cold start before any ingest), returns
+    ``False`` *without caching* — the next call after the collection is
+    created will re-detect.
+    """
+    global _sparse_capable
+    if _sparse_capable is not None:
+        return _sparse_capable
+
+    try:
+        info = get_client().get_collection(settings.qdrant_index)
+    except (UnexpectedResponse, ValueError):
+        return False
+
+    sparse_cfg = getattr(info.config.params, "sparse_vectors", None)
+    _sparse_capable = bool(sparse_cfg)
+    return _sparse_capable
+
+
+def dense_vector_name() -> str | None:
+    """Return the query vector name for the ingestion collection.
+
+    Qdrant expects ``using=None`` for an unnamed dense vector. Cache only a
+    successful collection probe so a cold start can detect the collection
+    after the first document is ingested.
+    """
+    global _dense_named
+    if _dense_named is None:
+        try:
+            info = get_client().get_collection(settings.qdrant_index)
+        except (UnexpectedResponse, ValueError):
+            return None
+        _dense_named = isinstance(info.config.params.vectors, dict)
+    return DENSE_VECTOR_NAME if _dense_named else None
+
+
+def reset_sparse_capability() -> None:
+    """Re-detect vector layout after the configured collection is recreated."""
+    global _sparse_capable, _dense_named
+    _sparse_capable = None
+    _dense_named = None
+
+
+# ---------------------------------------------------------------------------
+# Filters
+# ---------------------------------------------------------------------------
+
+
+def _collection_name_filter(collection_names: list[str]) -> models.Filter:
+    """Filter that scopes results to the given logical collection names.
+
+    Matches the ``meta.collection_name`` payload field written by the
+    ingestion service. With Qdrant's multitenancy HNSW config
+    (``m=0, payload_m=16``) and the ``is_tenant=True`` payload index on
+    that field, this hits per-tenant subgraphs cleanly.
+    """
+    return models.Filter(
+        must=[
+            models.FieldCondition(
+                key="meta.collection_name",
+                match=models.MatchAny(any=collection_names),
+            )
+        ]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+
+async def vector_search(
+    collection_names: list[str],
+    query_vector: list[float],
+    sparse_vector: models.SparseVector | None,
+    k: int,
+) -> RetrievalResult:
+    """Query the configured Qdrant collection.
+
+    * Single physical Qdrant collection (``settings.qdrant_index``).
+    * Filter scoped to ``meta.collection_name IN (collection_names)``.
+    * Hybrid (dense + sparse, RRF-fused server-side) when ``sparse_vector`` is
+      provided AND the collection has sparse vectors. Dense-only fallback
+      otherwise.
+    * Returns ``RetrievalResult``. Distances are normalized cosine for the dense
+      path (``(score + 1) / 2``) and raw RRF scores for the hybrid path.
+    """
+    client = get_client()
+    qdrant_collection = settings.qdrant_index
+    qfilter = _collection_name_filter(collection_names)
+
+    # The sync QdrantClient blocks; run capability probe and query in a worker
+    # thread so a slow Qdrant call doesn't stall the whole event loop.
+    use_hybrid = sparse_vector is not None and await asyncio.to_thread(has_sparse_vectors)
+
+    log.info(
+        "vector_search: collections=%s (qdrant=%s, hybrid=%s) k=%d",
+        sanitize_for_log(collection_names),
+        qdrant_collection,
+        use_hybrid,
+        k,
+    )
+
+    try:
+        if use_hybrid:
+            response = await asyncio.to_thread(
+                lambda: client.query_points(
+                    collection_name=qdrant_collection,
+                    prefetch=[
+                        models.Prefetch(
+                            query=query_vector,
+                            using=DENSE_VECTOR_NAME,
+                            limit=k * 2,
+                            filter=qfilter,
+                        ),
+                        models.Prefetch(
+                            query=sparse_vector,
+                            using=SPARSE_VECTOR_NAME,
+                            limit=k * 2,
+                            filter=qfilter,
+                        ),
+                    ],
+                    query=models.FusionQuery(fusion=models.Fusion.RRF),
+                    limit=k,
+                )
+            )
+        else:
+            dense_name = await asyncio.to_thread(dense_vector_name)
+            response = await asyncio.to_thread(
+                lambda: client.query_points(
+                    collection_name=qdrant_collection,
+                    query=query_vector,
+                    using=dense_name,
+                    query_filter=qfilter,
+                    limit=k,
+                )
+            )
+    except UnexpectedResponse:
+        log.exception("Qdrant query failed for collection %s", qdrant_collection)
+        return RetrievalResult(texts=[], metadatas=[], distances=[])
+
+    texts: list[str] = []
+    metadatas: list[dict] = []
+    distances: list[float] = []
+    for point in response.points:
+        payload = point.payload or {}
+        texts.append(payload.get("content", ""))
+        metadatas.append(payload.get("meta", {}))
+        score = point.score
+        # Dense path: cosine in [-1, 1] → normalize to [0, 1].
+        # Hybrid path: RRF score is already a positive rank-fusion score.
+        distances.append(score if use_hybrid else (score + 1.0) / 2.0)
+
+    return RetrievalResult(texts=texts, metadatas=metadatas, distances=distances)
+
+
+# ---------------------------------------------------------------------------
+# Scroll (used by BM25 fallback)
+# ---------------------------------------------------------------------------
+
+
+def scroll_collection_texts(collection_names: list[str]) -> list[tuple[str, dict]]:
+    """Scroll all documents matching ``meta.collection_name IN (collection_names)``.
+
+    Returns a list of ``(text, meta)``. Used by the BM25 fallback
+    path to build an in-memory inverted index over the relevant subset of the
+    physical collection — never the whole index; ``meta`` rides along so
+    BM25-surfaced documents keep their provenance through fusion. Bounded by
+    ``BM25_MAX_DOCS`` so a runaway logical collection can't OOM the process;
+    if the cap is hit the BM25 index is built on the partial set and a
+    warning is logged.
+    """
+    client = get_client()
+    qdrant_collection = settings.qdrant_index
+    sfilter = _collection_name_filter(collection_names)
+    max_docs = settings.bm25_max_docs
+
+    results: list[tuple[str, dict]] = []
+    offset = None
+    while True:
+        points, next_offset = client.scroll(
+            collection_name=qdrant_collection,
+            scroll_filter=sfilter,
+            limit=100,
+            offset=offset,
+            with_payload=True,
+        )
+        for point in points:
+            payload = point.payload or {}
+            text = payload.get("content", "")
+            if text:
+                results.append((text, payload.get("meta", {})))
+            if len(results) >= max_docs:
+                log.warning(
+                    "scroll_collection_texts hit BM25_MAX_DOCS=%d for %s; "
+                    "building BM25 index on partial set",
+                    max_docs,
+                    sanitize_for_log(collection_names),
+                )
+                return results
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    return results

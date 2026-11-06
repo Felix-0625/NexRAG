@@ -1,0 +1,160 @@
+import asyncio
+import logging
+import sys
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI, Response
+from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+from app import http_client
+from app.auth import verify_api_key
+from app.config import settings
+from app.logging_config import configure_logging
+from app.routes.search import router as search_router
+from app.services import qdrant, query_generation, sparse_embedding
+
+configure_logging(settings)
+log = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log.info("Starting agentic retrieval service")
+    log.info(
+        "Observability: log_level=%s log_level_app=%s log_format=%s metrics_enabled=%s",
+        settings.log_level,
+        settings.log_level_app or "(inherit)",
+        settings.log_format,
+        settings.metrics_enabled,
+    )
+    log.info("Qdrant: uri=%s index=%s", settings.qdrant_uri, settings.qdrant_index)
+    log.info(
+        "Embedding: model=%s query_prefix=%r",
+        settings.embedding_model,
+        settings.embedding_prefix_query,
+    )
+    log.info(
+        "Hybrid search: enable=%s sparse_provider=%s sparse_model=%s",
+        settings.enable_hybrid_search,
+        settings.sparse_query_provider,
+        settings.sparse_query_model,
+    )
+    log.info(
+        "Reranking: enable=%s provider=%s model=%s",
+        settings.enable_reranking,
+        settings.reranker_provider,
+        settings.reranker_model,
+    )
+    log.info("Agentic RAG: %s", settings.enable_agentic_rag)
+    if settings.enable_agentic_rag:
+        log.info("Agent model: %s", settings.agent_model)
+        log.info("Agent API base: %s", settings.agent_api_base_url)
+        log.info("Agent max iterations: %d", settings.agent_max_iterations)
+
+    # Eagerly initialize Qdrant client
+    qdrant.get_client()
+
+    # Detect sparse-vector capability on the configured collection. Cached
+    # for the process lifetime once a definite answer is obtained; if the
+    # collection doesn't yet exist (cold-start before any ingest), we
+    # re-detect on first query.
+    if qdrant.collection_exists():
+        sparse_present = qdrant.has_sparse_vectors()
+        log.info(
+            "Sparse vectors on collection %r: %s",
+            settings.qdrant_index,
+            sparse_present,
+        )
+        if settings.enable_hybrid_search and sparse_present:
+            sparse_embedding.get_model()
+    else:
+        log.warning(
+            "Qdrant collection %r does not exist yet; sparse capability "
+            "will be detected on first query.",
+            settings.qdrant_index,
+        )
+
+    if settings.enable_reranking and settings.reranker_provider == "fastembed":
+        from app.services.reranker import _local_rerank_scores
+
+        # Download and initialize before /health starts answering. Agent tool
+        # requests have a configurable deadline that a cold model load may exceed.
+        try:
+            await asyncio.to_thread(_local_rerank_scores, "warmup", ["warmup"])
+            log.info("Local cross-encoder ready: %s", settings.reranker_model)
+        except Exception:
+            if settings.rerank_required:
+                raise
+            log.exception("Local cross-encoder warmup failed; searches will use reranker fallback")
+
+    yield
+
+    await http_client.close_client()
+    await query_generation.close_client()
+    # The agent module is imported lazily (pipeline only pulls in pydantic_ai
+    # when agentic mode runs) — close its transport only if it was ever loaded,
+    # without forcing the import here.
+    agent_module = sys.modules.get("app.services.agent")
+    if agent_module is not None:
+        await agent_module.close_client()
+    sparse_embedding.close()
+    qdrant.close_client()
+    log.info("Agentic retrieval service shut down")
+
+
+app = FastAPI(
+    title="Agentic Retrieval Service",
+    description="Agentic retrieval engine for Open WebUI",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.include_router(search_router)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics(_api_key: str = Depends(verify_api_key)):
+    """Prometheus scrape endpoint.
+
+    Bearer-authenticated with the same ``API_KEY`` as ``/search`` — the scrape
+    job must send ``Authorization: Bearer <API_KEY>``. Returns 404 when
+    METRICS_ENABLED=false; instrumentation runs regardless.
+    """
+    if not settings.metrics_enabled:
+        return JSONResponse(status_code=404, content={"detail": "metrics disabled"})
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness probe — verifies Qdrant connectivity."""
+    try:
+        # Sync Qdrant client — probe in a worker thread so a hung Qdrant
+        # connection can't stall the event loop (and with it /health).
+        await asyncio.to_thread(lambda: qdrant.get_client().get_collections())
+        return {"status": "ok"}
+    except Exception as exc:
+        # Log full exception server-side; surface only a generic status to
+        # callers to avoid leaking internal hostnames/ports.
+        log.warning("Readiness check failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error"},
+        )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "app.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=True,
+    )

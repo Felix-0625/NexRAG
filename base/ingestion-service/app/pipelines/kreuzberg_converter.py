@@ -1,0 +1,275 @@
+"""HTTP client wrapper around the goldziher/kreuzberg API-server container.
+
+Lives next to the in-process Haystack converters (``PyPDFToDocument`` etc.)
+but talks to a separate sidecar service over HTTP — the same deployment model
+used for other extraction sidecars. Keeps the ingestion-service image small
+and crash-isolates extraction.
+
+The sidecar runs the Litestar-based API server bundled in the
+``goldziher/kreuzberg`` image (``serve -H 0.0.0.0 -p 8000``). The
+``POST /extract`` endpoint accepts one or more files in a repeated
+multipart field named ``files`` and returns a JSON **array** — one
+object per uploaded file, each with at least
+``{"content": str, "mime_type": str, "metadata": {...}, "tables": [...]}``.
+Verified against ``goldziher/kreuzberg:4.0.7-core`` (May 2026).
+"""
+
+from __future__ import annotations
+
+import logging
+import mimetypes
+from pathlib import Path
+
+import httpx
+from haystack import Document, component
+
+from app.pipelines.converters import meta_for
+from app.pipelines.errors import ExtractionError
+
+log = logging.getLogger(__name__)
+
+
+# Python's stdlib ``mimetypes`` only knows the half-dozen types in its own
+# defaults table plus whatever ``/etc/mime.types`` ships on the host. The slim
+# Python image used by this service is missing the OOXML and OpenDocument
+# families, EPUB and RTF — exactly the long-tail formats Kreuzberg handles
+# best. Register them here so ``mimetypes.guess_type`` returns the right
+# Content-Type for the multipart upload (Kreuzberg dispatches on it).
+_EXTRA_TYPES = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".doc": "application/msword",
+    ".xls": "application/vnd.ms-excel",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".odt": "application/vnd.oasis.opendocument.text",
+    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+    ".odp": "application/vnd.oasis.opendocument.presentation",
+    ".epub": "application/epub+zip",
+    ".rtf": "application/rtf",
+}
+for _ext, _ct in _EXTRA_TYPES.items():
+    mimetypes.add_type(_ct, _ext)
+
+
+@component
+class KreuzbergRemoteConverter:
+    """Posts each source file to the Kreuzberg ``/extract`` endpoint and turns
+    the JSON response into a Haystack ``Document``.
+
+    One Document per source — matches the standard Haystack converter output
+    shape, so the rest of the pipeline (splitter → embedder → writer) is unchanged.
+    Auto-extracted Kreuzberg metadata (title, author, page_count, …) is
+    intentionally dropped for v1; the pipeline meta passed in by the caller
+    is the source of truth for Qdrant payload.
+    """
+
+    def __init__(
+        self,
+        kreuzberg_url: str,
+        *,
+        connect_timeout: float = 5.0,
+        read_timeout: float = 60.0,
+        verify: bool = True,
+        min_table_columns: int = 2,
+    ):
+        self._url = kreuzberg_url.rstrip("/") + "/extract"
+        # Minimum markdown columns a detected table must have to be appended. The
+        # sidecar's detector false-fires on multi-column prose and emits 1-column
+        # line-dumps that just duplicate the body; gate them out. See
+        # _render_tables_section. 1 = keep-all (the pre-gate behaviour).
+        self._min_table_columns = min_table_columns
+        # Split timeout — connect fails fast so a stalled sidecar doesn't
+        # tie up a worker for the full read window. Write/pool reuse the
+        # connect value: nothing about the upload is read-shaped.
+        self._timeout = httpx.Timeout(connect_timeout, read=read_timeout)
+        self._verify = verify
+        # One pooled client for the component's lifetime — the converter is a
+        # process-lifetime singleton, so sidecar connections are reused instead
+        # of paying a TCP(+TLS) handshake per document.
+        self._client = httpx.Client(timeout=self._timeout, verify=self._verify)
+
+    @component.output_types(documents=list[Document])
+    def run(
+        self,
+        sources: list[str],
+        meta: dict | list[dict] | None = None,
+    ) -> dict:
+        docs: list[Document] = []
+        for i, source in enumerate(sources):
+            path = Path(source)
+            request_meta = meta_for(meta, i)
+            # Kreuzberg dispatches on the multipart part's Content-Type rather
+            # than sniffing the bytes. Sending ``application/octet-stream`` for
+            # everything trips ``UnsupportedFormatError`` server-side, so guess
+            # from the filename extension. Falls back to octet-stream only if
+            # mimetypes can't decide — and Kreuzberg's resulting 500 will say
+            # "Unsupported format" which is the right diagnostic.
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            try:
+                with path.open("rb") as fh:
+                    # Field name must be ``files`` — verified against the
+                    # 4.0.x API server. ``file`` returns 400 "No files provided".
+                    files = {"files": (path.name, fh, content_type)}
+                    resp = self._client.post(self._url, files=files)
+                resp.raise_for_status()
+            except httpx.HTTPError as exc:
+                # Typed so the route-layer classifier dispatches on isinstance
+                # rather than substring-matching the message — substring matches
+                # were fragile (the old classifier missed real pypdf/openai
+                # class names entirely; see sec.md Finding 5).
+                raise ExtractionError(f"kreuzberg extract failed for {path.name}: {exc}") from exc
+
+            result = _first_result(resp.json())
+            if result is None:
+                raise ExtractionError(
+                    f"kreuzberg returned an unrecognized response shape for {path.name}"
+                )
+            content = _content_from_payload(result, self._min_table_columns)
+            doc_meta = _doc_meta_from_payload(result)
+            # Request meta is the contract with the route layer (file_id /
+            # collection_name / user_id …) and must win on any collision.
+            merged_meta = {**doc_meta, **request_meta}
+            docs.append(Document(content=content, meta=merged_meta))
+        return {"documents": docs}
+
+
+def _content_from_payload(result: dict, min_table_columns: int = 2) -> str:
+    """Build the chunk-source text from a Kreuzberg ``/extract`` response.
+
+    The 4.0.x API returns a JSON **array** — one ``ExtractionResult`` per
+    uploaded file. We upload one source per request, so we take the first
+    element. From it we pull two fields:
+
+    - ``content`` — the body text. In tabular PDFs, Kreuzberg flattens
+      tables into this string without whitespace (``"Sales100120135"`` etc.),
+      so the body alone is lossy for any document with tables.
+    - ``tables`` — a separate array of detected tables, each with a
+      pre-rendered ``markdown`` field and a ``page_number``. Genuinely
+      column-segmented tables are appended as a ``## Tables`` Markdown
+      section so they survive downstream chunking + embedding (with
+      ``CHUNK_SPLIT_BY=markdown`` each lands in its own ``### Table N`` section).
+      **Gated by ``min_table_columns``**: the 4.0.x detector false-fires on
+      multi-column PROSE and returns 1-column line-dumps (``cells`` carries no
+      row/col geometry, so even real tables can degenerate to one column) —
+      those merely duplicate the body, so we drop them. ``min_table_columns=1``
+      restores the pre-gate keep-all behaviour.
+
+    ``result`` is the ExtractionResult already validated by ``_first_result``.
+    An empty ``content`` is a legitimately empty document and flows through as
+    a zero-chunk ingest; an unrecognized response shape raises
+    ``ExtractionError`` in ``run`` instead.
+    """
+    body = result["content"]
+    tables = result.get("tables") if isinstance(result.get("tables"), list) else []
+    table_section = _render_tables_section(tables, min_table_columns)
+    if table_section:
+        return f"{body}\n\n{table_section}" if body else table_section
+    return body
+
+
+def _first_result(payload: object) -> dict | None:
+    """The single ExtractionResult from a Kreuzberg 4.0.x response — a
+    one-element JSON array (one source per request) whose element carries a
+    string ``content``. ``None`` for any other shape; ``run`` raises on it."""
+    if (
+        isinstance(payload, list)
+        and payload
+        and isinstance(payload[0], dict)
+        and isinstance(payload[0].get("content"), str)
+    ):
+        return payload[0]
+    return None
+
+
+# Whitelist of document-level metadata fields we surface from Kreuzberg's
+# response into Qdrant payload. Curated to retrieval-useful signals only —
+# producer/pdf_version/dimensions etc. would just bloat the payload.
+#
+# ``languages`` is sourced from the top-level ``detected_languages`` (renamed
+# to drop the "detected_" prefix that's now redundant in context); everything
+# else is read from ``metadata.{key}``.
+_DOC_META_FIELDS: tuple[str, ...] = ("title", "subject", "authors", "created_at")
+
+
+def _doc_meta_from_payload(result: dict) -> dict:
+    """Pick the retrieval-useful subset of document-level metadata.
+
+    Empty / falsy values are dropped so chunks don't carry
+    ``"subject": ""`` / ``"authors": []`` noise — the retrieval-agent
+    preview whitelist also drops empty values, so emitting them here
+    is just wasted bytes in Qdrant.
+    """
+    out: dict = {}
+    inner = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    for key in _DOC_META_FIELDS:
+        value = inner.get(key)
+        if value in (None, "", [], {}):
+            continue
+        out[key] = value
+    # ``detected_languages`` sits at the top level of the ExtractionResult,
+    # not under ``metadata``. We surface it as ``languages`` so the Qdrant
+    # payload key matches the keyword-index name in ``qdrant_setup.py``.
+    langs = result.get("detected_languages")
+    if isinstance(langs, list) and langs:
+        out["languages"] = langs
+    return out
+
+
+def _render_tables_section(tables: list, min_columns: int = 2) -> str:
+    """Render Kreuzberg's ``tables`` array as a Markdown section.
+
+    Each table goes under a ``### Table N (page X)`` H3 inside a parent
+    ``## Tables`` H2 so the structure-aware chunker (``CHUNK_SPLIT_BY=
+    markdown``) gives each table its own chunk with a ``meta.headers``
+    breadcrumb.
+
+    Tables are dropped when they are missing the pre-rendered ``markdown``
+    field (we don't render from ``cells`` ourselves — and in 4.0.x ``cells``
+    has no row/col geometry anyway), OR when the markdown has fewer than
+    ``min_columns`` columns or no data rows. The column gate is the load-bearing
+    one: the sidecar's detector false-fires on multi-column PROSE and emits
+    1-column line-dumps that merely duplicate the body, polluting the index.
+    ``min_columns=1`` keeps everything (the pre-gate behaviour).
+
+    Numbering is monotonic across **kept** tables — a dropped table doesn't
+    leave a gap. Returns the empty string if nothing survives, so we never emit
+    an empty heading.
+    """
+    blocks: list[str] = []
+    counter = 0
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        md = table.get("markdown")
+        if not isinstance(md, str) or not md.strip():
+            continue
+        cols, data_rows = _table_shape(md)
+        if cols < min_columns or data_rows < 1:
+            log.debug("kreuzberg: dropping degenerate table (cols=%d rows=%d)", cols, data_rows)
+            continue
+        counter += 1
+        page = table.get("page_number")
+        if isinstance(page, int) and not isinstance(page, bool):
+            heading = f"### Table {counter} (page {page})"
+        else:
+            heading = f"### Table {counter}"
+        blocks.append(f"{heading}\n\n{md.strip()}")
+    if not blocks:
+        return ""
+    return "## Tables\n\n" + "\n\n".join(blocks)
+
+
+def _table_shape(md: str) -> tuple[int, int]:
+    """``(columns, data_rows)`` for a rendered Markdown table.
+
+    Read off the ``|---|---|`` separator row: column count is the number of
+    cells in it, data rows are the lines after it. Returns ``(0, 0)`` when the
+    markdown has no separator (not a real table), so the caller drops it.
+    """
+    lines = [ln.strip() for ln in md.splitlines() if ln.strip()]
+    for i, line in enumerate(lines):
+        if "-" in line and set(line) <= set("|-: "):
+            cols = len([cell for cell in line.strip("|").split("|") if cell.strip()])
+            return cols, len(lines) - i - 1
+    return 0, 0
