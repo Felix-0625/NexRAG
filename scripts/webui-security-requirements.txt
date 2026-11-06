@@ -1,0 +1,24 @@
+# Security replacements for the pinned upstream slim requirements, 2026-10-29.
+# These replace matching upstream pins; they are not an extra unmerged pip layer.
+fastapi==0.141.1
+aiohttp==3.14.4
+authlib==1.9.1
+joserfc==1.7.6
+black==26.10.1
+Brotli==1.2.1
+cryptography==50.0.2
+mcp==2.2.0
+pillow==13.0.0
+PyJWT[crypto]==2.15.0
+opentelemetry-api==1.45.1
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp==1.45.1
+opentelemetry-instrumentation==0.66b1
+opentelemetry-instrumentation-fastapi==0.66b1
+opentelemetry-instrumentation-sqlalchemy==0.66b1
+opentelemetry-instrumentation-redis==0.66b1
+opentelemetry-instrumentation-requests==0.66b1
+opentelemetry-instrumentation-logging==0.66b1
+opentelemetry-instrumentation-httpx==0.66b1
+opentelemetry-instrumentation-aiohttp-client==0.66b1
+opentelemetry-instrumentation-system-metrics==0.66b1

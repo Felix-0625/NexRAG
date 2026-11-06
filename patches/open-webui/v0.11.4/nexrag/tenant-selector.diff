@@ -1,0 +1,166 @@
+diff --git a/backend/open_webui/main.py b/backend/open_webui/main.py
+index e7c2915..d1d69ce 100644
+--- a/backend/open_webui/main.py
++++ b/backend/open_webui/main.py
+@@ -237,6 +237,7 @@ from open_webui.utils.chat_variables import (
+     normalize_chat_variables,
+ )
+ from open_webui.utils.embeddings import generate_embeddings
++from open_webui.utils.headers import include_user_info_headers
+ from open_webui.utils.json_codec import JSONCodec
+ from open_webui.utils.json_response import apply_orjson_http_json
+ from open_webui.utils.logger import start_logger
+@@ -1105,6 +1106,28 @@ async def _set_direct_model(request: Request, model_item: dict, user) -> None:
+     request.state.model = model_item
+ 
+ 
++@app.get('/api/nexrag/tenants')
++async def get_nexrag_tenants(request: Request, user=Depends(get_verified_user)):
++    """Proxy tenant choices using the verified Open WebUI user identity."""
++    base_url = os.environ.get('NEXRAG_API_BASE_URL', '').rstrip('/')
++    service_key = os.environ.get('NEXRAG_SHARED_API_KEY', '')
++    jwt_secret = os.environ.get('FORWARD_USER_INFO_HEADER_JWT_SECRET', '')
++    if not base_url or len(service_key) < 32 or len(jwt_secret) < 32:
++        raise HTTPException(status_code=503, detail='NexRAG tenant service is not configured')
++
++    headers = include_user_info_headers(
++        {'Authorization': f'Bearer {service_key}'}, user, request=request
++    )
++    try:
++        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
++            async with session.get(f'{base_url}/tenants', headers=headers) as response:
++                if response.status != 200:
++                    raise HTTPException(status_code=502, detail='NexRAG tenant service rejected the request')
++                return await response.json()
++    except aiohttp.ClientError as exc:
++        raise HTTPException(status_code=502, detail='NexRAG tenant service is unavailable') from exc
++
++
+ @app.post('/api/chat/completions')
+ @app.post('/api/v1/chat/completions')  # Experimental: Compatibility with OpenAI API
+ async def chat_completion(
+@@ -1230,6 +1253,7 @@ async def chat_completion(
+ 
+         user_message = form_data.pop('user_message', None) or form_data.pop('parent_message', None)
+         chat_id = form_data.pop('chat_id', None) or ''
++        nexrag_tenant_id = form_data.pop('nexrag_tenant_id', None)
+         chat_variables = form_data.pop('chat_variables', None)
+         if chat_variables is None:
+             existing_chat = await Chats.get_chat_by_id(chat_id) if is_saved_chat_id(chat_id) else None
+@@ -1268,6 +1292,7 @@ async def chat_completion(
+             'user_agent': request.headers.get('user-agent', '') or '',
+             'internal': getattr(request.state, 'internal', False) is True,
+             'chat_id': chat_id,
++            'nexrag_tenant_id': nexrag_tenant_id,
+             'user_message': user_message,
+             'user_message_id': user_message.get('id') if user_message else None,
+             'assistant_message_id': form_data.pop('assistant_message_id', None),
+diff --git a/backend/open_webui/routers/openai.py b/backend/open_webui/routers/openai.py
+index 63676d1..5e1f203 100644
+--- a/backend/open_webui/routers/openai.py
++++ b/backend/open_webui/routers/openai.py
+@@ -1585,6 +1585,9 @@ async def generate_chat_completion(
+             payload['logit_bias'] = JSONCodec.loads(logit_bias)
+ 
+     headers, cookies = await get_headers_and_cookies(request, url, key, api_config, metadata, user=user)
++    if payload.get('model') == 'NexRAG' and (metadata or {}).get('nexrag_tenant_id'):
++        # NexRAG verifies this selection against the signed Open WebUI user JWT.
++        headers['X-NexRAG-Tenant-Id'] = metadata['nexrag_tenant_id']
+ 
+     is_responses = api_config.get('api_type') == 'responses'
+ 
+diff --git a/src/lib/components/chat/Chat.svelte b/src/lib/components/chat/Chat.svelte
+index fd0e1bb..cd57469 100644
+--- a/src/lib/components/chat/Chat.svelte
++++ b/src/lib/components/chat/Chat.svelte
+@@ -176,6 +176,30 @@
+ 	let askUserTimeoutMs: number | null = null;
+ 
+ 	let selectedModels = [''];
++	let nexragTenants: { tenant_id: string; label: string }[] = [];
++	let selectedNexragTenantId = '';
++	let nexragTenantError = '';
++
++	const loadNexragTenants = async () => {
++		try {
++			const response = await fetch(`${WEBUI_BASE_URL}/api/nexrag/tenants`, {
++				headers: { Authorization: `Bearer ${localStorage.token}` }
++			});
++			if (!response.ok) throw new Error('Unable to load authorized tenants');
++			const payload = await response.json();
++			nexragTenants = payload.data ?? [];
++			const previous = sessionStorage.getItem('nexragTenantId');
++			selectedNexragTenantId =
++				nexragTenants.find((tenant) => tenant.tenant_id === previous)?.tenant_id ??
++				nexragTenants[0]?.tenant_id ??
++				'';
++			nexragTenantError = '';
++		} catch (error) {
++			nexragTenants = [];
++			selectedNexragTenantId = '';
++			nexragTenantError = 'Tenant choices are unavailable';
++		}
++	};
+ 	let selectedModelIdx = 0;
+ 	$: selectedModelIdx = Math.max(0, selectedModels.length - 1);
+ 	$: backgroundImage = embedded
+@@ -188,7 +212,7 @@
+ 			($settings?.backgroundImageUrl ?? $config?.license_metadata?.background_image_url);
+ 
+ 	let atSelectedModel: Model | undefined;
+-	let selectedModelIds = [];
++	let selectedModelIds: string[] = [];
+ 	$: if (atSelectedModel !== undefined) {
+ 		selectedModelIds = [atSelectedModel.id];
+ 	} else {
+@@ -1553,6 +1577,8 @@
+ 
+ 	onMount(() => {
+ 		loading = true;
++		// The selector is scoped to this browser tab; authorization stays on the server.
++		void loadNexragTenants();
+ 		console.log('mounted');
+ 		window.addEventListener('message', onMessageHandler);
+ 		$socket?.on('events', chatEventHandler);
+@@ -3134,6 +3160,10 @@
+ 			toast.error($i18n.t('Model not selected'));
+ 			return;
+ 		}
++		if (selectedModels.includes('NexRAG') && !selectedNexragTenantId) {
++			toast.error('Select a business tenant before using NexRAG');
++			return;
++		}
+ 		const form = getChatVariablesForm(selectedModelIds, chatVariables, $models);
+ 		if (form.conflicts.length > 0) {
+ 			showChatVariablesModal = true;
+@@ -3574,6 +3604,7 @@
+ 			{
+ 				stream: stream,
+ 				model: model.id,
++				nexrag_tenant_id: model.id === 'NexRAG' ? selectedNexragTenantId : undefined,
+ 				...(messages.length > 0 ? { messages } : {}),
+ 				params: {
+ 					...$settings?.params,
+@@ -4378,6 +4409,22 @@
+ 							}}
+ 						/>
+ 					{/if}
++					{#if selectedModelIds.includes('NexRAG') && !readOnly}
++						<div class="flex items-center gap-2 border-b border-gray-100 px-4 py-2 text-sm dark:border-gray-800">
++							<label for="nexrag-tenant" class="font-medium">Business tenant</label>
++							<select
++								id="nexrag-tenant"
++								class="min-w-0 rounded-md border border-gray-200 bg-white px-2 py-1 dark:border-gray-700 dark:bg-gray-900"
++								bind:value={selectedNexragTenantId}
++								on:change={() => sessionStorage.setItem('nexragTenantId', selectedNexragTenantId)}
++							>
++								{#each nexragTenants as tenant}
++									<option value={tenant.tenant_id}>{tenant.label}</option>
++								{/each}
++							</select>
++							{#if nexragTenantError}<span class="text-red-600">{nexragTenantError}</span>{/if}
++						</div>
++					{/if}
+ 					<div id="chat-pane" class="flex flex-col flex-auto z-10 w-full @container overflow-auto">
+ 						{#if ($settings?.landingPageMode === 'chat' && !$selectedFolder) || createMessagesList(history, history.currentId).length > 0}
+ 							<div

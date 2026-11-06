@@ -1,0 +1,7 @@
+# Noncommercial demo sellers from the imported Olist dataset.
+# Open WebUI admins can select both. Add a verified user's email under users
+# to grant a narrower view; an unlisted non-admin has no business access.
+tenants:
+  7299e27ed73d2ad986de7f7c77d919fa: "Olist demo seller A"
+  fa40cc5b934574b62717c68f3d678b6d: "Olist demo seller B"
+users: {}

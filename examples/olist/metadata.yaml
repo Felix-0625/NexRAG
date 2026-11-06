@@ -1,0 +1,55 @@
+# Seller-facing schema for the Olist business database.
+# These names refer to the isolated projection, never the source SQLite tables.
+query_guidance: >-
+  This example analyzes Olist sellers. price_cents and freight_value_cents are
+  integer cent amounts in BRL. Count DISTINCT order_id for order counts because
+  one order can contain multiple sellers. Do not attribute whole-order payments
+  or reviews to a single seller.
+tables:
+  seller_items:
+    description: "当前卖家的订单商品行；金额以整数分存储。"
+    columns:
+      order_id: {type: TEXT, description: "订单 ID；一个订单可能包含多个卖家。"}
+      order_item_id: {type: INTEGER, description: "订单内商品行序号。"}
+      seller_id: {type: TEXT, description: "当前业务租户的卖家 ID。"}
+      product_id: {type: TEXT, description: "商品 ID。"}
+      shipping_limit_date: {type: TEXT, description: "发货期限。"}
+      price_cents: {type: INTEGER, description: "该卖家商品行售价，单位为巴西雷亚尔分。"}
+      freight_value_cents: {type: INTEGER, description: "该卖家商品行运费，单位为巴西雷亚尔分。"}
+  seller_orders:
+    description: "包含当前卖家商品的订单状态、日期与买家地区；每个订单只出现一次。"
+    columns:
+      order_id: {type: TEXT, description: "订单 ID。"}
+      order_status: {type: TEXT, description: "订单状态。"}
+      order_purchase_timestamp: {type: TEXT, description: "下单时间。"}
+      order_delivered_customer_date: {type: TEXT, description: "送达时间。"}
+      order_estimated_delivery_date: {type: TEXT, description: "预计送达时间。"}
+      customer_city: {type: TEXT, description: "买家城市。"}
+      customer_state: {type: TEXT, description: "买家州。"}
+  seller_products:
+    description: "当前卖家实际售出的商品资料。"
+    columns:
+      product_id: {type: TEXT, description: "商品 ID。"}
+      product_category_name: {type: TEXT, description: "原始葡语品类名。"}
+      product_category_name_english: {type: TEXT, description: "英语品类名，可能为空。"}
+      product_photos_qty: {type: INTEGER, description: "商品图片数量。"}
+      product_weight_g: {type: INTEGER, description: "商品重量，克。"}
+  seller_profile:
+    description: "当前卖家的公开地区资料。"
+    columns:
+      seller_id: {type: TEXT, description: "卖家 ID。"}
+      seller_city: {type: TEXT, description: "卖家城市。"}
+      seller_state: {type: TEXT, description: "卖家州。"}
+metrics:
+  item_revenue_brl:
+    description: "当前卖家商品行售价总和，巴西雷亚尔；不包含运费或订单级付款。"
+    calculation: "SUM(seller_items.price_cents) / 100.0"
+    table: seller_items
+    kind: amount
+    unit: BRL
+  order_count:
+    description: "包含当前卖家至少一条商品行的去重订单数。"
+    calculation: "COUNT(DISTINCT seller_items.order_id)"
+    table: seller_items
+    kind: count
+    unit: orders

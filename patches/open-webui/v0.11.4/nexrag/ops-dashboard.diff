@@ -1,0 +1,1269 @@
+diff --git a/backend/open_webui/main.py b/backend/open_webui/main.py
+index 4467680..e711e64 100644
+--- a/backend/open_webui/main.py
++++ b/backend/open_webui/main.py
+@@ -1128,6 +1128,77 @@ async def get_nexrag_tenants(request: Request, user=Depends(get_verified_user)):
+         raise HTTPException(status_code=502, detail='NexRAG tenant service is unavailable') from exc
+ 
+ 
++# PATCH NEXRAG OPS DASHBOARD
++# Proxy the NexRAG operations (admin), personal memory, and export APIs with
++# the verified Open WebUI identity. NexRAG re-checks role=admin for /ops and
++# the signed user ID for /memory and /exports; the browser never sees the
++# service key.
++_NEXRAG_PROXY_PREFIXES = ('ops/', 'memory', 'exports')
++
++
++def _nexrag_headers(request: Request, user) -> dict:
++    service_key = os.environ.get('NEXRAG_SHARED_API_KEY', '')
++    return include_user_info_headers({'Authorization': f'Bearer {service_key}'}, user, request=request)
++
++
++async def _nexrag_proxy(request: Request, user, path: str):
++    if not path.startswith(_NEXRAG_PROXY_PREFIXES) or '..' in path:
++        raise HTTPException(status_code=404, detail='Not found')
++    if path.startswith('ops/') and path != 'ops/feedback' and user.role != 'admin':
++        raise HTTPException(status_code=403, detail='Administrator role required')
++    base_url = os.environ.get('NEXRAG_API_BASE_URL', '').rstrip('/')
++    service_key = os.environ.get('NEXRAG_SHARED_API_KEY', '')
++    if not base_url or len(service_key) < 32:
++        raise HTTPException(status_code=503, detail='NexRAG service is not configured')
++    headers = _nexrag_headers(request, user)
++    body = await request.body() if request.method in ('POST', 'PUT', 'DELETE') else None
++    if body:
++        headers['Content-Type'] = 'application/json'
++    try:
++        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
++            async with session.request(
++                request.method, f'{base_url}/{path}', params=dict(request.query_params), data=body, headers=headers
++            ) as response:
++                payload = await response.json(content_type=None)
++                if response.status >= 400:
++                    detail = payload.get('detail') if isinstance(payload, dict) else None
++                    raise HTTPException(status_code=response.status, detail=detail or 'NexRAG request failed')
++                return payload
++    except aiohttp.ClientError as exc:
++        raise HTTPException(status_code=502, detail='NexRAG service is unavailable') from exc
++
++
++@app.api_route('/api/nexrag/{path:path}', methods=['GET', 'POST', 'DELETE'])
++async def nexrag_proxy(request: Request, path: str, user=Depends(get_verified_user)):
++    return await _nexrag_proxy(request, user, path)
++
++
++@app.get('/api/nexrag-download/{relative_path:path}')
++async def nexrag_export_download(request: Request, relative_path: str, user=Depends(get_verified_user)):
++    """Stream one export file's bytes; the JSON proxy above can't carry binary content."""
++    if '..' in relative_path:
++        raise HTTPException(status_code=404, detail='Not found')
++    base_url = os.environ.get('NEXRAG_API_BASE_URL', '').rstrip('/')
++    service_key = os.environ.get('NEXRAG_SHARED_API_KEY', '')
++    if not base_url or len(service_key) < 32:
++        raise HTTPException(status_code=503, detail='NexRAG service is not configured')
++    headers = _nexrag_headers(request, user)
++    try:
++        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
++            async with session.get(f'{base_url}/exports/download/{relative_path}', headers=headers) as response:
++                if response.status >= 400:
++                    raise HTTPException(status_code=response.status, detail='Export not found')
++                data = await response.read()
++                return Response(
++                    content=data,
++                    media_type=response.headers.get('content-type', 'application/octet-stream'),
++                    headers={'Content-Disposition': response.headers.get('content-disposition', '')},
++                )
++    except aiohttp.ClientError as exc:
++        raise HTTPException(status_code=502, detail='NexRAG service is unavailable') from exc
++# /PATCH NEXRAG OPS DASHBOARD
++
++
+ @app.post('/api/chat/completions')
+ @app.post('/api/v1/chat/completions')  # Experimental: Compatibility with OpenAI API
+ async def chat_completion(
+diff --git a/backend/open_webui/routers/openai.py b/backend/open_webui/routers/openai.py
+index 5e1f203..2e87611 100644
+--- a/backend/open_webui/routers/openai.py
++++ b/backend/open_webui/routers/openai.py
+@@ -1588,6 +1588,11 @@ async def generate_chat_completion(
+     if payload.get('model') == 'NexRAG' and (metadata or {}).get('nexrag_tenant_id'):
+         # NexRAG verifies this selection against the signed Open WebUI user JWT.
+         headers['X-NexRAG-Tenant-Id'] = metadata['nexrag_tenant_id']
++    # PATCH NEXRAG OPS DASHBOARD: the assistant message ID becomes the NexRAG
++    # trace ID so thumbs up/down feedback can be attached to the right trace.
++    if payload.get('model') == 'NexRAG' and (metadata or {}).get('message_id'):
++        headers['X-OpenWebUI-Message-Id'] = str(metadata['message_id'])
++    # /PATCH NEXRAG OPS DASHBOARD
+ 
+     is_responses = api_config.get('api_type') == 'responses'
+ 
+diff --git a/backend/open_webui/routers/evaluations.py b/backend/open_webui/routers/evaluations.py
+index 00c1517..dec9a62 100644
+--- a/backend/open_webui/routers/evaluations.py
++++ b/backend/open_webui/routers/evaluations.py
+@@ -422,6 +422,32 @@ async def get_feedbacks(
+     return result
+ 
+ 
++# PATCH NEXRAG OPS DASHBOARD
++async def _forward_nexrag_feedback(request: Request, user, feedback) -> None:
++    """Send thumbs up/down on NexRAG answers to the NexRAG trace store (best effort)."""
++    import os
++
++    import aiohttp
++
++    from open_webui.utils.headers import include_user_info_headers
++
++    data, meta = feedback.data or {}, feedback.meta or {}
++    rating, message_id = data.get('rating'), meta.get('message_id')
++    base_url = os.environ.get('NEXRAG_API_BASE_URL', '').rstrip('/')
++    service_key = os.environ.get('NEXRAG_SHARED_API_KEY', '')
++    if data.get('model_id') != 'NexRAG' or rating in (None, 0) or not message_id or not base_url:
++        return
++    headers = include_user_info_headers({'Authorization': f'Bearer {service_key}'}, user, request=request)
++    body = {'trace_id': str(message_id), 'rating': 1 if int(rating) > 0 else -1,
++            'comment': (data.get('comment') or data.get('reason') or None)}
++    try:
++        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
++            await session.post(f'{base_url}/ops/feedback', json=body, headers=headers)
++    except Exception as exc:  # noqa: BLE001 - feedback forwarding must not fail the UI
++        log.warning(f'NexRAG feedback forwarding failed: {exc}')
++# /PATCH NEXRAG OPS DASHBOARD
++
++
+ @router.post('/feedback', response_model=FeedbackModel)
+ async def create_feedback(
+     request: Request,
+@@ -436,6 +462,7 @@ async def create_feedback(
+             detail=ERROR_MESSAGES.DEFAULT(),
+         )
+ 
++    await _forward_nexrag_feedback(request, user, feedback)  # PATCH NEXRAG OPS DASHBOARD
+     await publish_event(
+         request,
+         EVENTS.FEEDBACK_CREATED,
+@@ -475,6 +502,7 @@ async def update_feedback_by_id(
+     if not feedback:
+         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
+ 
++    await _forward_nexrag_feedback(request, user, feedback)  # PATCH NEXRAG OPS DASHBOARD
+     await publish_event(
+         request,
+         EVENTS.FEEDBACK_UPDATED,
+diff --git a/src/lib/components/admin/Evaluations.svelte b/src/lib/components/admin/Evaluations.svelte
+index 5a7bb79..2de7f35 100644
+--- a/src/lib/components/admin/Evaluations.svelte
++++ b/src/lib/components/admin/Evaluations.svelte
+@@ -7,6 +7,7 @@
+ 
+ 	import Leaderboard from './Evaluations/Leaderboard.svelte';
+ 	import Feedbacks from './Evaluations/Feedbacks.svelte';
++	import NexRAG from './Evaluations/NexRAG.svelte'; // PATCH NEXRAG OPS DASHBOARD
+ 
+ 	const i18n = getContext('i18n');
+ 
+@@ -14,7 +15,7 @@
+ 	$: {
+ 		const pathParts = $page.url.pathname.split('/');
+ 		const tabFromPath = pathParts[pathParts.length - 1];
+-		selectedTab = ['leaderboard', 'feedback'].includes(tabFromPath) ? tabFromPath : 'leaderboard';
++		selectedTab = ['leaderboard', 'feedback', 'nexrag'].includes(tabFromPath) ? tabFromPath : 'leaderboard';
+ 	}
+ 
+ 	$: if (selectedTab) {
+@@ -115,6 +116,19 @@
+ 					</div>
+ 				{/if}
+ 			</a>
++			<!-- PATCH NEXRAG OPS DASHBOARD -->
++			<a
++				id="nexrag"
++				href="/admin/evaluations/nexrag"
++				draggable="false"
++				class="px-0.5 py-1 min-w-fit rounded-lg lg:flex-none flex items-center gap-1.5 text-right transition select-none {selectedTab ===
++				'nexrag'
++					? ''
++					: ' text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'}"
++			>
++				<div class="self-center">NexRAG</div>
++			</a>
++			<!-- /PATCH NEXRAG OPS DASHBOARD -->
+ 		</div>
+ 
+ 		<div class="flex-1 mt-1 lg:mt-0 px-[1rem] lg:pr-[1rem] lg:pl-0 overflow-y-scroll">
+@@ -122,6 +136,8 @@
+ 				<Leaderboard />
+ 			{:else if selectedTab === 'feedback'}
+ 				<Feedbacks />
++			{:else if selectedTab === 'nexrag'}
++				<NexRAG />
+ 			{/if}
+ 		</div>
+ 	</div>
+diff --git a/src/lib/components/chat/Settings/Personalization.svelte b/src/lib/components/chat/Settings/Personalization.svelte
+index a751829..6acb31b 100644
+--- a/src/lib/components/chat/Settings/Personalization.svelte
++++ b/src/lib/components/chat/Settings/Personalization.svelte
+@@ -11,6 +11,7 @@
+ 	import DropdownMenu from '$lib/components/common/DropdownMenu.svelte';
+ 	import ExperimentalBadge from '$lib/components/common/ExperimentalBadge.svelte';
+ 	import MemoryModal from './Personalization/MemoryModal.svelte';
++	import NexRAGMemory from './Personalization/NexRAGMemory.svelte'; // PATCH NEXRAG OPS DASHBOARD
+ 	import { deleteMemoriesByUserId, deleteMemoryById, getMemories } from '$lib/apis/memories';
+ 	import { toast } from 'svelte-sonner';
+ 	import UserSettingRow from './UserSettingRow.svelte';
+@@ -269,6 +270,12 @@
+ 				</div>
+ 			{/if}
+ 		</UserSettingSection>
++
++		<!-- PATCH NEXRAG OPS DASHBOARD -->
++		<div class="mt-4 border-t border-gray-100 pt-4 dark:border-gray-850">
++			<NexRAGMemory />
++		</div>
++		<!-- /PATCH NEXRAG OPS DASHBOARD -->
+ 	</div>
+ 
+ 	<div class="shrink-0 flex justify-end text-sm font-normal">
+diff --git a/src/lib/apis/nexrag/index.ts b/src/lib/apis/nexrag/index.ts
+new file mode 100644
+index 0000000..ec620fc
+--- /dev/null
++++ b/src/lib/apis/nexrag/index.ts
+@@ -0,0 +1,75 @@
++import { WEBUI_BASE_URL } from '$lib/constants';
++
++// PATCH NEXRAG OPS DASHBOARD
++// Calls go to the Open WebUI backend proxy (/api/nexrag/*), which forwards the
++// verified identity to NexRAG. The browser never holds NexRAG credentials.
++const request = async (token: string, path: string, method = 'GET', body?: object) => {
++	const res = await fetch(`${WEBUI_BASE_URL}/api/nexrag/${path}`, {
++		method,
++		headers: {
++			Accept: 'application/json',
++			'Content-Type': 'application/json',
++			authorization: `Bearer ${token}`
++		},
++		body: body ? JSON.stringify(body) : undefined
++	});
++	const json = await res.json().catch(() => ({}));
++	if (!res.ok) {
++		throw json?.detail ?? `NexRAG request failed (${res.status})`;
++	}
++	return json;
++};
++
++export const getOpsOverview = (token: string, days = 7) => request(token, `ops/overview?days=${days}`);
++export const getTraces = (token: string, status = '') =>
++	request(token, `ops/traces?limit=100${status ? `&status=${status}` : ''}`);
++export const getTrace = (token: string, id: string) => request(token, `ops/traces/${id}`);
++export const getProposals = (token: string, status = '') =>
++	request(token, `ops/proposals${status ? `?status=${status}` : ''}`);
++export const getProposal = (token: string, id: string) => request(token, `ops/proposals/${id}`);
++export const reviewProposal = (
++	token: string,
++	id: string,
++	action: 'approve' | 'reject' | 'promote' | 'rollback',
++	note = ''
++) => request(token, `ops/proposals/${id}/${action}`, 'POST', action === 'promote' ? {} : { note });
++export const runEvolution = (token: string) => request(token, 'ops/evolution/run', 'POST', {});
++
++export const getNexragMemories = (token: string, includeHistory = false) =>
++	request(token, `memory${includeHistory ? '?include_history=true' : ''}`);
++export const confirmNexragMemory = (token: string, id: string) =>
++	request(token, `memory/${id}/confirm`, 'POST', {});
++export const forgetNexragMemory = (token: string, id: string) =>
++	request(token, `memory/${id}`, 'DELETE');
++export const forgetAllNexragMemories = (token: string) => request(token, 'memory', 'DELETE');
++// /PATCH NEXRAG OPS DASHBOARD
++
++// Tenants, knowledge base, and exports (see src/api/ops_routes.py, exports_routes.py).
++export const getTenants = (token: string) => request(token, 'ops/tenants');
++export const createTenant = (token: string, tenant_id: string, label: string) =>
++	request(token, 'ops/tenants', 'POST', { tenant_id, label });
++export const deleteTenant = (token: string, tenantId: string) =>
++	request(token, `ops/tenants/${tenantId}`, 'DELETE');
++export const grantTenant = (token: string, email: string, tenant_id: string) =>
++	request(token, 'ops/tenants/grant', 'POST', { email, tenant_id });
++export const revokeTenant = (token: string, email: string, tenant_id: string) =>
++	request(token, 'ops/tenants/revoke', 'POST', { email, tenant_id });
++
++export const getKnowledgeDocuments = (token: string) => request(token, 'ops/knowledge');
++export const deleteKnowledgeDocument = (token: string, fileId: string) =>
++	request(token, `ops/knowledge/${fileId}`, 'DELETE');
++export const uploadKnowledgeDocument = async (token: string, file: File) => {
++	const form = new FormData();
++	form.append('file', file);
++	const res = await fetch(`${WEBUI_BASE_URL}/api/nexrag/ops/knowledge`, {
++		method: 'POST',
++		headers: { authorization: `Bearer ${token}` },
++		body: form
++	});
++	const json = await res.json().catch(() => ({}));
++	if (!res.ok) throw json?.detail ?? `Upload failed (${res.status})`;
++	return json;
++};
++
++export const exportDownloadUrl = (relativePath: string) =>
++	`${WEBUI_BASE_URL}/api/nexrag-download/${relativePath}`;
+diff --git a/src/lib/components/admin/Evaluations/NexRAG.svelte b/src/lib/components/admin/Evaluations/NexRAG.svelte
+new file mode 100644
+index 0000000..dde713d
+--- /dev/null
++++ b/src/lib/components/admin/Evaluations/NexRAG.svelte
+@@ -0,0 +1,383 @@
++<script lang="ts">
++	// PATCH NEXRAG OPS DASHBOARD
++	import { getContext, onMount } from 'svelte';
++	import type { Writable } from 'svelte/store';
++	import type { i18n as i18nType } from 'i18next';
++	import { toast } from 'svelte-sonner';
++	import Spinner from '$lib/components/common/Spinner.svelte';
++	import {
++		deleteKnowledgeDocument,
++		getKnowledgeDocuments,
++		getOpsOverview,
++		getProposal,
++		getProposals,
++		getTrace,
++		getTraces,
++		reviewProposal,
++		runEvolution,
++		uploadKnowledgeDocument
++	} from '$lib/apis/nexrag';
++
++	const i18n = getContext<Writable<i18nType>>('i18n');
++
++	let view: string = 'overview';
++	// PATCH NEXRAG OPS DASHBOARD: admin-maintained shared knowledge base.
++	let knowledgeDocs: any[] = [];
++	let uploading = false;
++	let fileInput: HTMLInputElement;
++
++	const loadKnowledge = async () => {
++		knowledgeDocs = (await getKnowledgeDocuments(localStorage.token).catch((e) => (toast.error(`${e}`), null)))
++			?.data ?? [];
++	};
++
++	const uploadKnowledge = async (files: FileList | null) => {
++		if (!files?.length) return;
++		uploading = true;
++		for (const file of files) {
++			await uploadKnowledgeDocument(localStorage.token, file).catch((error) => toast.error(`${error}`));
++		}
++		uploading = false;
++		if (fileInput) fileInput.value = '';
++		await loadKnowledge();
++	};
++
++	const deleteKnowledge = async (fileId: string) => {
++		if (!window.confirm($i18n.t('Remove this file from the shared knowledge base?'))) return;
++		await deleteKnowledgeDocument(localStorage.token, fileId).catch((error) => toast.error(`${error}`));
++		await loadKnowledge();
++	};
++	// /PATCH NEXRAG OPS DASHBOARD
++	let loading = true;
++	let overview: any = null;
++	let traces: any[] = [];
++	let traceDetail: any = null;
++	let proposals: any[] = [];
++	let backlog: any = null;
++	let proposalDetail: any = null;
++	let reviewNote = '';
++	let running = false;
++
++	const fmtTime = (t: number) => (t ? new Date(t * 1000).toLocaleString() : '-');
++	const pct = (v: number | null | undefined) => (v == null ? '-' : `${(v * 100).toFixed(1)}%`);
++	const num = (v: any, d = 3) => (v == null ? '-' : Number(v).toFixed(d));
++
++	const load = async () => {
++		loading = true;
++		try {
++			if (view === 'overview') overview = await getOpsOverview(localStorage.token, 7);
++			if (view === 'traces') traces = await getTraces(localStorage.token);
++			if (view === 'proposals') {
++				const res = await getProposals(localStorage.token);
++				proposals = res.proposals;
++				backlog = res.backlog;
++			}
++			if (view === 'knowledge') await loadKnowledge(); // PATCH NEXRAG OPS DASHBOARD
++		} catch (error) {
++			toast.error(`${error}`);
++		}
++		loading = false;
++	};
++
++	const openTrace = async (id: string) => {
++		traceDetail = await getTrace(localStorage.token, id).catch((e) => (toast.error(`${e}`), null));
++	};
++
++	const openProposal = async (id: string) => {
++		reviewNote = '';
++		proposalDetail = await getProposal(localStorage.token, id).catch((e) => (toast.error(`${e}`), null));
++	};
++
++	const act = async (action: 'approve' | 'reject' | 'promote' | 'rollback') => {
++		if (!proposalDetail) return;
++		try {
++			await reviewProposal(localStorage.token, proposalDetail.id, action, reviewNote);
++			toast.success(`${action}: ok`);
++			await openProposal(proposalDetail.id);
++			await load();
++		} catch (error) {
++			toast.error(`${error}`);
++		}
++	};
++
++	const triggerCycle = async () => {
++		running = true;
++		try {
++			const report = await runEvolution(localStorage.token);
++			const actions = (report.actions ?? []).map((a: any) => `${a.kind ?? ''} ${a.action}`).join(', ');
++			toast.success(actions || 'cycle finished');
++			view = 'proposals';
++			await load();
++		} catch (error) {
++			toast.error(`${error}`);
++		}
++		running = false;
++	};
++
++	const scoreOf = (name: string, source = 'rule') =>
++		overview?.scores?.find((s: any) => s.name === name && s.source === source)?.mean;
++
++	onMount(load);
++</script>
++
++<div class="flex flex-col gap-3 py-2 text-sm">
++	<div class="flex items-center justify-between gap-2">
++		<div class="flex gap-1" role="tablist" aria-label="NexRAG operations">
++			{#each [['overview', 'Overview'], ['traces', 'Traces'], ['proposals', 'Proposals'], ['knowledge', 'Knowledge base']] as [id, label]}
++				<button
++					type="button"
++					role="tab"
++					aria-selected={view === id}
++					class="px-2.5 py-1 rounded-lg transition {view === id
++						? 'bg-gray-100 dark:bg-gray-850 font-medium'
++						: 'text-gray-500 hover:text-gray-900 dark:hover:text-white'}"
++					on:click={() => {
++						view = id;
++						traceDetail = null;
++						proposalDetail = null;
++						load();
++					}}>{$i18n.t(label)}</button
++				>
++			{/each}
++		</div>
++		<button
++			type="button"
++			class="px-3 py-1 rounded-full bg-black text-white dark:bg-white dark:text-black text-xs disabled:opacity-50"
++			disabled={running}
++			on:click={triggerCycle}
++		>
++			{running ? $i18n.t('Running…') : $i18n.t('Run evolution cycle')}
++		</button>
++	</div>
++
++	{#if loading}
++		<div class="flex justify-center py-10"><Spinner className="size-5" /></div>
++	{:else if view === 'overview' && overview}
++		{#if overview.backlog?.alert || overview.backlog?.queue_full}
++			<div
++				role="alert"
++				class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
++			>
++				{$i18n.t('Proposal backlog needs review')}: {overview.backlog.counts?.pending_review ?? 0} pending,
++				oldest {overview.backlog.oldest_pending_days} days{overview.backlog.queue_full
++					? ' — queue is full, new proposals are paused'
++					: ''}.
++			</div>
++		{/if}
++		<div class="grid grid-cols-2 lg:grid-cols-5 gap-2">
++			{#each [['Traces (7d)', overview.totals?.traces ?? 0], ['Success', pct((overview.totals?.ok ?? 0) / Math.max(overview.totals?.traces ?? 0, 1))], ['Avg latency', `${Math.round(overview.totals?.avg_latency ?? 0)} ms`], ['Reflection rate', num(scoreOf('reflections'), 2)], ['Thumbs up', pct(scoreOf('user_rating', 'user'))]] as [label, value]}
++				<div class="rounded-xl border border-gray-100 dark:border-gray-850 p-3">
++					<div class="text-xs text-gray-500">{$i18n.t(label)}</div>
++					<div class="text-lg font-medium">{value}</div>
++				</div>
++			{/each}
++		</div>
++		<table class="w-full text-xs">
++			<caption class="text-left text-gray-500 pb-1">{$i18n.t('Daily trend')}</caption>
++			<thead class="text-gray-500"><tr><th class="text-left font-normal">Day</th><th class="text-right font-normal">Traces</th><th class="text-right font-normal">Success</th><th class="text-right font-normal">Latency</th></tr></thead>
++			<tbody>
++				{#each overview.daily as row}
++					<tr class="border-t border-gray-100 dark:border-gray-850">
++						<td>{new Date(row.day * 1000).toLocaleDateString()}</td>
++						<td class="text-right">{row.traces}</td>
++						<td class="text-right">{pct(row.success)}</td>
++						<td class="text-right">{Math.round(row.avg_latency ?? 0)} ms</td>
++					</tr>
++				{/each}
++			</tbody>
++		</table>
++		<div class="text-xs text-gray-500">
++			Production prompt <code>{overview.production?.prompt}</code> · params <code>{overview.production?.params}</code>
++		</div>
++	{:else if view === 'traces'}
++		{#if traceDetail}
++			<button type="button" class="text-xs text-gray-500 hover:underline self-start" on:click={() => (traceDetail = null)}>← {$i18n.t('Back')}</button>
++			<div class="text-xs space-y-1">
++				<div><b>{traceDetail.trace.id}</b> · {traceDetail.trace.status} · {traceDetail.trace.latency_ms} ms{traceDetail.trace.canary ? ' · canary' : ''}</div>
++				<div class="text-gray-500">tenant {traceDetail.trace.tenant_id} · user {traceDetail.trace.user_hash.slice(0, 10)}… · {fmtTime(traceDetail.trace.created_at)}</div>
++				<div class="whitespace-pre-wrap rounded-lg bg-gray-50 dark:bg-gray-900 p-2">{traceDetail.trace.input_text ?? '(not stored)'}</div>
++				<div class="whitespace-pre-wrap rounded-lg bg-gray-50 dark:bg-gray-900 p-2">{traceDetail.trace.output_text ?? '(not stored)'}</div>
++			</div>
++			<ol class="text-xs space-y-1 list-decimal pl-5" aria-label="Observations">
++				{#each traceDetail.observations as obs}
++					<li>
++						<span class="font-medium">{obs.name}</span> <span class="text-gray-500">({obs.type})</span>
++						{#if obs.error}<span class="text-red-600 dark:text-red-400"> — {obs.error}</span>{/if}
++						<div class="text-gray-500 truncate">{obs.input_summary}</div>
++					</li>
++				{/each}
++			</ol>
++			<div class="flex flex-wrap gap-1 text-xs">
++				{#each traceDetail.scores as s}
++					<span class="rounded-full border border-gray-200 dark:border-gray-800 px-2">{s.name}={num(s.value, 2)} <span class="text-gray-500">{s.source}</span></span>
++				{/each}
++			</div>
++		{:else}
++			<table class="w-full text-xs">
++				<thead class="text-gray-500"><tr><th class="text-left font-normal">Time</th><th class="text-left font-normal">Input</th><th class="text-left font-normal">Status</th><th class="text-right font-normal">Latency</th></tr></thead>
++				<tbody>
++					{#each traces as t}
++						<tr class="border-t border-gray-100 dark:border-gray-850 hover:bg-gray-50 dark:hover:bg-gray-900 cursor-pointer" on:click={() => openTrace(t.id)}>
++							<td class="whitespace-nowrap pr-2">{fmtTime(t.created_at)}</td>
++							<td class="truncate max-w-[24rem]"><button type="button" class="text-left hover:underline" on:click|stopPropagation={() => openTrace(t.id)}>{t.input_preview ?? t.id}</button></td>
++							<td class={t.status === 'ok' ? '' : 'text-red-600 dark:text-red-400'}>{t.status}{t.canary ? ' · canary' : ''}</td>
++							<td class="text-right">{t.latency_ms} ms</td>
++						</tr>
++					{/each}
++				</tbody>
++			</table>
++		{/if}
++	{:else if view === 'proposals'}
++		{#if proposalDetail}
++			{@const r = proposalDetail.report}
++			<button type="button" class="text-xs text-gray-500 hover:underline self-start" on:click={() => (proposalDetail = null)}>← {$i18n.t('Back')}</button>
++			<div class="text-xs space-y-3">
++				<div><b>{proposalDetail.kind}</b> · {proposalDetail.status} · cluster <code>{proposalDetail.cluster_key}</code> · {proposalDetail.evidence_count} traces · {fmtTime(proposalDetail.created_at)}</div>
++
++				<section aria-labelledby="what-changed">
++					<h3 id="what-changed" class="font-medium mb-1">{$i18n.t('What changed')}</h3>
++					{#if r?.what_changed?.diff}
++						<pre class="whitespace-pre-wrap rounded-lg bg-gray-50 dark:bg-gray-900 p-2 overflow-x-auto">{#each r.what_changed.diff.split('\n') as line}<span class={line.startsWith('+') ? 'text-green-700 dark:text-green-400' : line.startsWith('-') ? 'text-red-700 dark:text-red-400' : ''}>{line}
++</span>{/each}</pre>
++					{:else if r?.what_changed?.params}
++						<ul class="list-disc pl-5">{#each Object.entries(r.what_changed.params as Record<string, any>) as [k, v]}<li><code>{k}</code>: {v.from} → <b>{v.to}</b></li>{/each}</ul>
++					{/if}
++				</section>
++
++				<section aria-labelledby="why">
++					<h3 id="why" class="font-medium mb-1">{$i18n.t('Why')}</h3>
++					<div>{r?.why?.reason} {r?.why?.tool ? `(${r.why.tool})` : ''} — {r?.why?.rationale}</div>
++					<ul class="list-disc pl-5 text-gray-500">{#each r?.why?.examples ?? [] as ex}<li><button type="button" class="hover:underline" on:click={() => { view = 'traces'; openTrace(ex.trace_id); }}>{ex.input || ex.trace_id}</button>{ex.errors?.length ? ` — ${ex.errors[0]}` : ''}</li>{/each}</ul>
++				</section>
++
++				<section aria-labelledby="effect">
++					<h3 id="effect" class="font-medium mb-1">{$i18n.t('Effect (baseline → candidate)')}</h3>
++					<table class="w-full">
++						<thead class="text-gray-500"><tr><th class="text-left font-normal">Split / metric</th><th class="text-right font-normal">Baseline</th><th class="text-right font-normal">Candidate</th></tr></thead>
++						<tbody>
++							{#each Object.entries((r?.effect?.candidate ?? {}) as Record<string, Record<string, number>>) as [split, metrics]}
++								{#each Object.entries(metrics) as [m, v]}
++									{#if m !== 'n'}
++										<tr class="border-t border-gray-100 dark:border-gray-850">
++											<td>{split} / {m}</td>
++											<td class="text-right">{num(r.effect.baseline?.[split]?.[m])}</td>
++											<td class="text-right font-medium">{num(v)}</td>
++										</tr>
++									{/if}
++								{/each}
++							{/each}
++						</tbody>
++					</table>
++				</section>
++
++				<section aria-labelledby="gate">
++					<h3 id="gate" class="font-medium mb-1">{$i18n.t('Gate checks')}</h3>
++					<ul>{#each r?.gate ?? [] as c}<li>{c.passed ? '✅' : '❌'} <b>{c.check}</b> — {c.detail}</li>{/each}</ul>
++				</section>
++
++				<section aria-labelledby="risk">
++					<h3 id="risk" class="font-medium mb-1">{$i18n.t('Risk and rollback')}</h3>
++					<ul class="list-disc pl-5">{#each r?.risk ?? [] as note}<li>{note}</li>{/each}</ul>
++					<div class="text-gray-500">Rollback target: <code>{r?.rollback?.to_version}</code></div>
++				</section>
++
++				{#if proposalDetail.canary_metrics}
++					<section aria-labelledby="canary">
++						<h3 id="canary" class="font-medium mb-1">{$i18n.t('Canary (online)')}</h3>
++						<div class="flex flex-wrap gap-1">{#each Object.entries(proposalDetail.canary_metrics) as [k, v]}<span class="rounded-full border border-gray-200 dark:border-gray-800 px-2">{k}={num(v, 3)}</span>{/each}</div>
++					</section>
++				{/if}
++
++				{#if proposalDetail.review_note}<div class="text-gray-500">Review note: {proposalDetail.review_note} ({proposalDetail.reviewer})</div>{/if}
++
++				<label class="block">
++					<span class="text-gray-500">{$i18n.t('Review note')}</span>
++					<textarea bind:value={reviewNote} rows="2" class="mt-1 w-full rounded-lg border border-gray-200 dark:border-gray-800 bg-transparent p-2"></textarea>
++				</label>
++				<div class="flex flex-wrap gap-2">
++					{#if proposalDetail.status === 'pending_review'}
++						<button type="button" class="px-3 py-1 rounded-full bg-black text-white dark:bg-white dark:text-black" on:click={() => act('approve')}>{$i18n.t('Approve → start canary')}</button>
++						<button type="button" class="px-3 py-1 rounded-full border border-gray-300 dark:border-gray-700" on:click={() => act('reject')}>{$i18n.t('Reject')}</button>
++					{:else if proposalDetail.status === 'stale'}
++						<button type="button" class="px-3 py-1 rounded-full border border-gray-300 dark:border-gray-700" on:click={() => act('reject')}>{$i18n.t('Close stale proposal')}</button>
++					{:else if proposalDetail.status === 'canary'}
++						<button type="button" class="px-3 py-1 rounded-full bg-black text-white dark:bg-white dark:text-black" on:click={() => act('promote')}>{$i18n.t('Promote to production')}</button>
++						<button type="button" class="px-3 py-1 rounded-full border border-red-300 text-red-700 dark:border-red-800 dark:text-red-300" on:click={() => act('rollback')}>{$i18n.t('Abort canary')}</button>
++					{:else if proposalDetail.status === 'promoted'}
++						<button type="button" class="px-3 py-1 rounded-full border border-red-300 text-red-700 dark:border-red-800 dark:text-red-300" on:click={() => act('rollback')}>{$i18n.t('Roll back')}</button>
++					{/if}
++				</div>
++			</div>
++		{:else}
++			{#if backlog}
++				<div class="text-xs text-gray-500">
++					Pending {backlog.counts?.pending_review ?? 0}/{backlog.queue_limit} · canary {backlog.counts?.canary ?? 0} · stale {backlog.counts?.stale ?? 0} · expired {backlog.counts?.expired ?? 0}{backlog.alert ? ` · oldest pending ${backlog.oldest_pending_days} days` : ''}
++				</div>
++			{/if}
++			<table class="w-full text-xs">
++				<thead class="text-gray-500"><tr><th class="text-left font-normal">Updated</th><th class="text-left font-normal">Kind</th><th class="text-left font-normal">Cluster</th><th class="text-left font-normal">Status</th><th class="text-right font-normal">Evidence</th></tr></thead>
++				<tbody>
++					{#each proposals as p}
++						<tr class="border-t border-gray-100 dark:border-gray-850 hover:bg-gray-50 dark:hover:bg-gray-900">
++							<td class="whitespace-nowrap pr-2">{fmtTime(p.updated_at)}</td>
++							<td>{p.kind}</td>
++							<td><button type="button" class="hover:underline" on:click={() => openProposal(p.id)}>{p.cluster_key}</button></td>
++							<td>{p.status}</td>
++							<td class="text-right">{p.evidence_count}</td>
++						</tr>
++					{:else}
++						<tr><td colspan="5" class="py-6 text-center text-gray-500">{$i18n.t('No proposals yet')}</td></tr>
++					{/each}
++				</tbody>
++			</table>
++		{/if}
++	{:else if view === 'knowledge'}
++		<div class="text-xs text-gray-500">
++			{$i18n.t(
++				'Files here feed the Agent’s shared search_knowledge_documents tool for every tenant. Each account’s own private knowledge base (Workspace > Knowledge) is separate and stays theirs.'
++			)}
++		</div>
++		<div>
++			<input
++				bind:this={fileInput}
++				type="file"
++				multiple
++				disabled={uploading}
++				on:change={(e) => uploadKnowledge(e.currentTarget.files)}
++				class="text-xs"
++			/>
++			{#if uploading}<span class="text-xs text-gray-500">{$i18n.t('Uploading')}...</span>{/if}
++		</div>
++		<table class="w-full text-xs">
++			<thead class="text-gray-500">
++				<tr>
++					<th class="text-left font-normal">{$i18n.t('Filename')}</th>
++					<th class="text-right font-normal">{$i18n.t('Chunks')}</th>
++					<th class="text-left font-normal">{$i18n.t('Uploaded by')}</th>
++					<th class="text-left font-normal">{$i18n.t('Uploaded at')}</th>
++					<th></th>
++				</tr>
++			</thead>
++			<tbody>
++				{#each knowledgeDocs as doc}
++					<tr class="border-t border-gray-100 dark:border-gray-850">
++						<td>{doc.filename}</td>
++						<td class="text-right">{doc.chunks_count}</td>
++						<td>{doc.uploaded_by}</td>
++						<td>{fmtTime(doc.created_at)}</td>
++						<td class="text-right">
++							<button
++								type="button"
++								class="text-gray-500 hover:text-red-600 hover:underline"
++								on:click={() => deleteKnowledge(doc.file_id)}>{$i18n.t('Remove')}</button
++							>
++						</td>
++					</tr>
++				{:else}
++					<tr><td colspan="5" class="py-6 text-center text-gray-500">{$i18n.t('No shared documents yet')}</td></tr>
++				{/each}
++			</tbody>
++		</table>
++	{/if}
++</div>
++<!-- /PATCH NEXRAG OPS DASHBOARD -->
+diff --git a/src/lib/components/chat/Settings/Personalization/NexRAGMemory.svelte b/src/lib/components/chat/Settings/Personalization/NexRAGMemory.svelte
+new file mode 100644
+index 0000000..4f5d50a
+--- /dev/null
++++ b/src/lib/components/chat/Settings/Personalization/NexRAGMemory.svelte
+@@ -0,0 +1,110 @@
++<script lang="ts">
++	// PATCH NEXRAG OPS DASHBOARD
++	// Personal NexRAG long-term memory: only the signed-in user's own records.
++	import { getContext, onMount } from 'svelte';
++	import type { Writable } from 'svelte/store';
++	import type { i18n as i18nType } from 'i18next';
++	import { toast } from 'svelte-sonner';
++	import Spinner from '$lib/components/common/Spinner.svelte';
++	import {
++		confirmNexragMemory,
++		forgetAllNexragMemories,
++		forgetNexragMemory,
++		getNexragMemories
++	} from '$lib/apis/nexrag';
++
++	const i18n = getContext<Writable<i18nType>>('i18n');
++
++	let items: any[] = [];
++	let loading = true;
++	let unavailable = '';
++	let showHistory = false;
++
++	const load = async () => {
++		loading = true;
++		try {
++			items = (await getNexragMemories(localStorage.token, showHistory)).data ?? [];
++			unavailable = '';
++		} catch (error) {
++			unavailable = `${error}`;
++			items = [];
++		}
++		loading = false;
++	};
++
++	const confirm = async (id: string) => {
++		try {
++			await confirmNexragMemory(localStorage.token, id);
++			toast.success($i18n.t('Memory confirmed'));
++			await load();
++		} catch (error) {
++			toast.error(`${error}`);
++		}
++	};
++
++	const forget = async (id?: string) => {
++		const message = id
++			? $i18n.t('Forget this memory and its earlier versions?')
++			: $i18n.t('Forget all NexRAG memories? This cannot be undone.');
++		if (!window.confirm(message)) return;
++		try {
++			id ? await forgetNexragMemory(localStorage.token, id) : await forgetAllNexragMemories(localStorage.token);
++			await load();
++		} catch (error) {
++			toast.error(`${error}`);
++		}
++	};
++
++	const scopeLabel = (m: any) =>
++		m.scope === 'global' ? $i18n.t('All tenants') : m.scope === 'tenant' ? `${$i18n.t('Tenant')} ${m.tenant_id?.slice(0, 8)}…` : $i18n.t('This chat');
++
++	onMount(load);
++</script>
++
++<div class="flex flex-col gap-2 text-xs" aria-live="polite">
++	<div class="flex items-center justify-between">
++		<div class="text-sm font-medium">{$i18n.t('NexRAG long-term memory')}</div>
++		<div class="flex items-center gap-3">
++			<label class="flex items-center gap-1 text-gray-500">
++				<input type="checkbox" bind:checked={showHistory} on:change={load} />
++				{$i18n.t('Show history')}
++			</label>
++			<button type="button" class="text-gray-500 hover:text-red-600 hover:underline disabled:opacity-40" disabled={!items.length} on:click={() => forget()}>
++				{$i18n.t('Forget all')}
++			</button>
++		</div>
++	</div>
++	<div class="text-gray-500">
++		{$i18n.t('Only you can see these. Disputed items were contradicted later; confirm the one that is correct.')}
++	</div>
++	{#if loading}
++		<Spinner className="size-4" />
++	{:else if unavailable}
++		<div class="text-gray-400">{unavailable}</div>
++	{:else if !items.length}
++		<div class="text-gray-400">{$i18n.t('NexRAG has not remembered anything about you yet.')}</div>
++	{:else}
++		<ul class="flex flex-col gap-1.5">
++			{#each items as m (m.id)}
++				<li class="flex items-start justify-between gap-3 {m.status === 'superseded' || m.status === 'archived' ? 'opacity-50' : ''}">
++					<div class="min-w-0">
++						<div class="break-words">
++							<span class="text-gray-500">{m.subject} / {m.attribute}:</span> {m.value}
++						</div>
++						<div class="text-[0.6875rem] text-gray-400">
++							{scopeLabel(m)} · {m.source} · {new Date(m.valid_from * 1000).toLocaleDateString()}
++							{#if m.status !== 'active'} · <span class={m.status === 'disputed' ? 'text-amber-600 dark:text-amber-400' : ''}>{m.status}</span>{/if}
++						</div>
++					</div>
++					<div class="flex shrink-0 gap-2">
++						{#if m.status === 'disputed'}
++							<button type="button" class="text-amber-700 dark:text-amber-300 hover:underline" on:click={() => confirm(m.id)}>{$i18n.t('This is correct')}</button>
++						{/if}
++						<button type="button" class="text-gray-500 hover:underline" on:click={() => forget(m.id)}>{$i18n.t('Forget')}</button>
++					</div>
++				</li>
++			{/each}
++		</ul>
++	{/if}
++</div>
++<!-- /PATCH NEXRAG OPS DASHBOARD -->
+diff --git a/src/lib/components/admin/Users.svelte b/src/lib/components/admin/Users.svelte
+index a695beb..f83bafe 100644
+--- a/src/lib/components/admin/Users.svelte
++++ b/src/lib/components/admin/Users.svelte
+@@ -10,6 +10,7 @@
+ 
+ 	import UserList from './Users/UserList.svelte';
+ 	import Groups from './Users/Groups.svelte';
++	import Tenants from './Users/Tenants.svelte'; // PATCH NEXRAG OPS DASHBOARD
+ 
+ 	const i18n = getContext('i18n');
+ 
+@@ -17,7 +18,7 @@
+ 	$: {
+ 		const pathParts = $page.url.pathname.split('/');
+ 		const tabFromPath = pathParts[pathParts.length - 1];
+-		selectedTab = ['overview', 'groups'].includes(tabFromPath) ? tabFromPath : 'overview';
++		selectedTab = ['overview', 'groups', 'tenants'].includes(tabFromPath) ? tabFromPath : 'overview';
+ 	}
+ 
+ 	$: if (selectedTab) {
+@@ -120,7 +121,20 @@
+ 				{#if formattedGroupCount !== null}
+ 					<div class="self-center text-sm opacity-60">
+ 						{formattedGroupCount}
+-					</div>
++						<!-- PATCH NEXRAG OPS DASHBOARD -->
++			<a
++				id="tenants"
++				href="/admin/users/tenants"
++				draggable="false"
++				class="px-0.5 py-1 min-w-fit rounded-lg lg:flex-none flex items-center gap-1.5 text-right transition select-none {selectedTab ===
++				'tenants'
++					? ''
++					: ' text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'}"
++			>
++				<div class=" self-center">{$i18n.t('NexRAG Tenants')}</div>
++			</a>
++			<!-- /PATCH NEXRAG OPS DASHBOARD -->
++		</div>
+ 				{/if}
+ 			</a>
+ 		</div>
+@@ -130,6 +144,8 @@
+ 				<UserList />
+ 			{:else if selectedTab === 'groups'}
+ 				<Groups />
++			{:else if selectedTab === 'tenants'}
++				<Tenants />
+ 			{/if}
+ 		</div>
+ 	</div>
+diff --git a/src/lib/components/admin/Users/UserList/EditUserModal.svelte b/src/lib/components/admin/Users/UserList/EditUserModal.svelte
+index 8877615..f812901 100644
+--- a/src/lib/components/admin/Users/UserList/EditUserModal.svelte
++++ b/src/lib/components/admin/Users/UserList/EditUserModal.svelte
+@@ -13,6 +13,9 @@
+ 	import XMark from '$lib/components/icons/XMark.svelte';
+ 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
+ 	import UserProfileImage from '$lib/components/chat/Settings/Account/UserProfileImage.svelte';
++	// PATCH NEXRAG OPS DASHBOARD
++	import { getTenants, grantTenant, revokeTenant } from '$lib/apis/nexrag';
++	// /PATCH NEXRAG OPS DASHBOARD
+ 
+ 	const i18n = getContext('i18n');
+ 	const dispatch = createEventDispatcher();
+@@ -30,9 +33,41 @@
+ 		if (selectedUser) {
+ 			_user = { ...selectedUser, password: '' };
+ 			loadUserGroups();
++			loadTenants(); // PATCH NEXRAG OPS DASHBOARD
+ 		}
+ 	};
+ 
++	// PATCH NEXRAG OPS DASHBOARD
++	// Which business tenants this account can view in NexRAG. A hard,
++	// server-enforced grant list (src/midplatform/tenant_access.py) — this is
++	// not the same as Open WebUI's own group/workspace permissions above.
++	let tenants: Record<string, string> | null = null;
++	let myGrants: string[] = [];
++	let tenantBusy = false;
++
++	const loadTenants = async () => {
++		tenants = null;
++		const res = await getTenants(localStorage.token).catch((error) => {
++			toast.error(`${error}`);
++			return null;
++		});
++		if (res) {
++			tenants = res.tenants;
++			myGrants = res.grants[selectedUser.email] ?? [];
++		}
++	};
++
++	const toggleTenant = async (tenantId: string, grant: boolean) => {
++		tenantBusy = true;
++		const action = grant ? grantTenant : revokeTenant;
++		await action(localStorage.token, selectedUser.email, tenantId).catch((error) => {
++			toast.error(`${error}`);
++		});
++		myGrants = grant ? [...myGrants, tenantId] : myGrants.filter((id) => id !== tenantId);
++		tenantBusy = false;
++	};
++	// /PATCH NEXRAG OPS DASHBOARD
++
+ 	let _user = {
+ 		profile_image_url: '',
+ 		role: 'pending',
+@@ -151,6 +186,37 @@
+ 										</div>
+ 									</div>
+ 
++									<!-- PATCH NEXRAG OPS DASHBOARD -->
++									<div class="flex flex-col w-full text-sm">
++										<div class="mb-1 text-xs text-gray-500">{$i18n.t('NexRAG business tenants')}</div>
++										{#if _user.role === 'admin'}
++											<div class="text-xs text-gray-400">
++												{$i18n.t('Administrators can view every business tenant.')}
++											</div>
++										{:else if tenants === null}
++											<div class="text-xs text-gray-400">{$i18n.t('Loading')}...</div>
++										{:else if Object.keys(tenants).length === 0}
++											<div class="text-xs text-gray-400">
++												{$i18n.t('No tenants configured yet.')}
++											</div>
++										{:else}
++											<div class="flex flex-col gap-1">
++												{#each Object.entries(tenants) as [tenantId, label]}
++													<label class="flex items-center gap-2 text-xs">
++														<input
++															type="checkbox"
++															disabled={tenantBusy}
++															checked={myGrants.includes(tenantId)}
++															on:change={(e) => toggleTenant(tenantId, e.currentTarget.checked)}
++														/>
++														{label}
++													</label>
++												{/each}
++											</div>
++										{/if}
++									</div>
++									<!-- /PATCH NEXRAG OPS DASHBOARD -->
++
+ 									<div class="flex flex-col w-full">
+ 										<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Name')}</div>
+ 
+diff --git a/src/lib/components/admin/Users/Tenants.svelte b/src/lib/components/admin/Users/Tenants.svelte
+new file mode 100644
+index 0000000..6c34426
+--- /dev/null
++++ b/src/lib/components/admin/Users/Tenants.svelte
+@@ -0,0 +1,126 @@
++<script lang="ts">
++	// PATCH NEXRAG OPS DASHBOARD
++	// Business tenant catalogue. Per-user grants are edited from each
++	// account's Edit User modal (NexRAGMemory lives in Settings > Personalization);
++	// this page only manages which tenants exist.
++	import { getContext, onMount } from 'svelte';
++	import type { Writable } from 'svelte/store';
++	import type { i18n as i18nType } from 'i18next';
++	import { toast } from 'svelte-sonner';
++	import Spinner from '$lib/components/common/Spinner.svelte';
++	import { createTenant, deleteTenant, getTenants } from '$lib/apis/nexrag';
++
++	const i18n = getContext<Writable<i18nType>>('i18n');
++
++	let tenants: Record<string, string> | null = null;
++	let grants: Record<string, string[]> = {};
++	let newId = '';
++	let newLabel = '';
++	let busy = false;
++
++	const load = async () => {
++		const res = await getTenants(localStorage.token).catch((error) => {
++			toast.error(`${error}`);
++			return null;
++		});
++		if (res) {
++			tenants = res.tenants;
++			grants = res.grants;
++		}
++	};
++
++	const grantCount = (tenantId: string) =>
++		Object.values(grants).filter((ids) => ids.includes(tenantId)).length;
++
++	const add = async () => {
++		if (!newId.trim() || !newLabel.trim()) return;
++		busy = true;
++		await createTenant(localStorage.token, newId.trim(), newLabel.trim()).catch((error) => {
++			toast.error(`${error}`);
++		});
++		newId = '';
++		newLabel = '';
++		busy = false;
++		await load();
++	};
++
++	const remove = async (tenantId: string) => {
++		if (!window.confirm($i18n.t('Delete this tenant and every grant for it?'))) return;
++		busy = true;
++		await deleteTenant(localStorage.token, tenantId).catch((error) => {
++			toast.error(`${error}`);
++		});
++		busy = false;
++		await load();
++	};
++
++	onMount(load);
++</script>
++
++<div class="flex flex-col gap-3 py-2 text-sm">
++	<div class="text-xs text-gray-500">
++		{$i18n.t(
++			'Grant or revoke which tenant each account can view from that account’s Edit User dialog on the Overview tab.'
++		)}
++	</div>
++
++	<div class="flex items-end gap-2">
++		<label class="flex flex-col text-xs text-gray-500 flex-1">
++			{$i18n.t('Tenant ID')}
++			<input
++				class="rounded-lg border border-gray-200 dark:border-gray-800 bg-transparent px-2 py-1 text-sm"
++				bind:value={newId}
++				placeholder="seller-a"
++			/>
++		</label>
++		<label class="flex flex-col text-xs text-gray-500 flex-1">
++			{$i18n.t('Label')}
++			<input
++				class="rounded-lg border border-gray-200 dark:border-gray-800 bg-transparent px-2 py-1 text-sm"
++				bind:value={newLabel}
++				placeholder="Seller A"
++			/>
++		</label>
++		<button
++			type="button"
++			class="px-3 py-1.5 rounded-full bg-black text-white dark:bg-white dark:text-black text-xs disabled:opacity-50"
++			disabled={busy}
++			on:click={add}>{$i18n.t('Add tenant')}</button
++		>
++	</div>
++
++	{#if tenants === null}
++		<div class="flex justify-center py-6"><Spinner className="size-5" /></div>
++	{:else if Object.keys(tenants).length === 0}
++		<div class="text-xs text-gray-400 py-4">{$i18n.t('No tenants configured yet.')}</div>
++	{:else}
++		<table class="w-full text-xs">
++			<thead class="text-gray-500">
++				<tr>
++					<th class="text-left font-normal">ID</th>
++					<th class="text-left font-normal">{$i18n.t('Label')}</th>
++					<th class="text-right font-normal">{$i18n.t('Accounts granted')}</th>
++					<th></th>
++				</tr>
++			</thead>
++			<tbody>
++				{#each Object.entries(tenants) as [tenantId, label]}
++					<tr class="border-t border-gray-100 dark:border-gray-850">
++						<td><code>{tenantId}</code></td>
++						<td>{label}</td>
++						<td class="text-right">{grantCount(tenantId)}</td>
++						<td class="text-right">
++							<button
++								type="button"
++								class="text-gray-500 hover:text-red-600 hover:underline"
++								disabled={busy}
++								on:click={() => remove(tenantId)}>{$i18n.t('Delete')}</button
++							>
++						</td>
++					</tr>
++				{/each}
++			</tbody>
++		</table>
++	{/if}
++</div>
++<!-- /PATCH NEXRAG OPS DASHBOARD -->
+diff --git a/src/lib/components/layout/Sidebar/UserMenu.svelte b/src/lib/components/layout/Sidebar/UserMenu.svelte
+index d4b45d0..0118498 100644
+--- a/src/lib/components/layout/Sidebar/UserMenu.svelte
++++ b/src/lib/components/layout/Sidebar/UserMenu.svelte
+@@ -33,6 +33,14 @@
+ 	import XMarkIcon from './icons/XMark.svelte';
+ 	import { updateUserStatus, updateUserSettings } from '$lib/apis/users';
+ 	import { toast } from 'svelte-sonner';
++	// PATCH NEXRAG OPS DASHBOARD
++	import {
++		forgetAccount,
++		otherRememberedAccounts,
++		type RememberedAccount
++	} from '$lib/utils/accountSwitcher';
++	import SwitchIcon from '$lib/components/icons/ArrowPath.svelte';
++	// /PATCH NEXRAG OPS DASHBOARD
+ 
+ 	const i18n = getContext('i18n');
+ 
+@@ -91,7 +99,31 @@
+ 		if (state && ($config?.features?.enable_public_active_users_count || role === 'admin')) {
+ 			getUsageInfo();
+ 		}
++
++		// PATCH NEXRAG OPS DASHBOARD
++		if (state) rememberedAccounts = otherRememberedAccounts($user?.id);
++		// /PATCH NEXRAG OPS DASHBOARD
++	};
++
++	// PATCH NEXRAG OPS DASHBOARD
++	// Password-free switch: swap the active token for an already-signed-in
++	// account remembered in this browser, then reload so every store (user,
++	// config, socket) re-initializes against the new identity.
++	let rememberedAccounts: RememberedAccount[] = [];
++
++	const switchToAccount = async (account: RememberedAccount) => {
++		show = false;
++		localStorage.token = account.token;
++		location.href = '/';
+ 	};
++
++	const removeRememberedAccount = (e: Event, id: string) => {
++		e.preventDefault();
++		e.stopPropagation();
++		forgetAccount(id);
++		rememberedAccounts = otherRememberedAccounts($user?.id);
++	};
++	// /PATCH NEXRAG OPS DASHBOARD
+ </script>
+ 
+ <svelte:window
+@@ -576,12 +608,50 @@
+ 				<div class=" self-center truncate">{$i18n.t('Settings')}</div>
+ 			</button>
+ 
++			<!-- PATCH NEXRAG OPS DASHBOARD -->
++			{#if rememberedAccounts.length > 0}
++				<div class="px-2 pt-1 pb-0.5 text-[0.6875rem] text-gray-400">
++					{$i18n.t('Switch account')}
++				</div>
++				{#each rememberedAccounts as account (account.id)}
++					<div
++						class="user-menu-row flex items-center w-full rounded-xl hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
++					>
++						<button
++							class="flex flex-1 min-w-0 h-[1.6875rem] items-center gap-2 rounded-xl px-2 text-[0.8125rem] cursor-pointer select-none text-left"
++							type="button"
++							on:click={() => switchToAccount(account)}
++						>
++							<div class="self-center shrink-0 size-4.5 flex items-center justify-center">
++								<SwitchIcon className="size-3.5" strokeWidth="1.5" />
++							</div>
++							<div class="self-center min-w-0 flex-1 truncate">
++								{account.name}
++								<span class="text-gray-400">({account.email})</span>
++							</div>
++						</button>
++						<Tooltip content={$i18n.t('Forget this account')}>
++							<button
++								type="button"
++								class="p-1 mr-1 rounded-lg hover:bg-gray-100/60 dark:hover:bg-gray-700/60 transition"
++								on:click={(e) => removeRememberedAccount(e, account.id)}
++							>
++								<XMarkIcon className="size-3.5" strokeWidth="1.5" />
++							</button>
++						</Tooltip>
++					</div>
++				{/each}
++				<hr class="border-gray-50/30 dark:border-gray-800/30 my-0.5 mx-1 p-0" />
++			{/if}
++			<!-- /PATCH NEXRAG OPS DASHBOARD -->
++
+ 			<button
+ 				class="flex h-[1.6875rem] items-center gap-2 rounded-xl px-2 text-[0.8125rem] w-full hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition cursor-pointer select-none"
+ 				type="button"
+ 				on:click={async () => {
+ 					const res = await userSignOut();
+ 					localStorage.removeItem('token');
++					if ($user?.id) forgetAccount($user.id); // PATCH NEXRAG OPS DASHBOARD
+ 
+ 					location.href = getLogoutRedirectUrl(res?.redirect_url);
+ 					show = false;
+diff --git a/src/routes/auth/+page.svelte b/src/routes/auth/+page.svelte
+index f24800e..0e1bf26 100644
+--- a/src/routes/auth/+page.svelte
++++ b/src/routes/auth/+page.svelte
+@@ -21,6 +21,7 @@
+ 	import { WEBUI_NAME, config, user, socket } from '$lib/stores';
+ 
+ 	import { generateInitialsImage, canvasPixelTest, getUserTimezone } from '$lib/utils';
++	import { rememberAccount } from '$lib/utils/accountSwitcher'; // PATCH NEXRAG OPS DASHBOARD
+ 
+ 	import Spinner from '$lib/components/common/Spinner.svelte';
+ 	import OnBoarding from '$lib/components/OnBoarding.svelte';
+@@ -50,6 +51,16 @@
+ 			toast.success($i18n.t(`You're now logged in.`));
+ 			if (sessionUser.token) {
+ 				localStorage.token = sessionUser.token;
++				// PATCH NEXRAG OPS DASHBOARD: remember this account for password-free switching.
++				rememberAccount({
++					id: sessionUser.id,
++					token: sessionUser.token,
++					name: sessionUser.name,
++					email: sessionUser.email,
++					role: sessionUser.role,
++					profileImageUrl: sessionUser.profile_image_url
++				});
++				// /PATCH NEXRAG OPS DASHBOARD
+ 			}
+ 			$socket.emit('user-join', { auth: { token: sessionUser.token } });
+ 			await user.set(sessionUser);
+diff --git a/src/lib/utils/accountSwitcher.ts b/src/lib/utils/accountSwitcher.ts
+new file mode 100644
+index 0000000..3a9ec30
+--- /dev/null
++++ b/src/lib/utils/accountSwitcher.ts
+@@ -0,0 +1,42 @@
++// PATCH NEXRAG OPS DASHBOARD
++// Password-free account switching for multi-tenant demos: remembers every
++// account this browser has signed into (token + display info) so the user
++// can hop between them without re-entering a password. Purely client-side —
++// nothing is sent to or trusted from the server beyond the token it issued.
++const STORAGE_KEY = 'nexrag.rememberedAccounts';
++
++export type RememberedAccount = {
++	id: string;
++	token: string;
++	name: string;
++	email: string;
++	role: string;
++	profileImageUrl?: string;
++};
++
++export const listRememberedAccounts = (): RememberedAccount[] => {
++	try {
++		const raw = localStorage.getItem(STORAGE_KEY);
++		return raw ? JSON.parse(raw) : [];
++	} catch {
++		return [];
++	}
++};
++
++export const rememberAccount = (account: RememberedAccount) => {
++	const accounts = listRememberedAccounts().filter((a) => a.id !== account.id);
++	accounts.unshift(account);
++	// Cap the list; this is a demo convenience, not a credential vault.
++	localStorage.setItem(STORAGE_KEY, JSON.stringify(accounts.slice(0, 10)));
++};
++
++export const forgetAccount = (id: string) => {
++	localStorage.setItem(
++		STORAGE_KEY,
++		JSON.stringify(listRememberedAccounts().filter((a) => a.id !== id))
++	);
++};
++
++export const otherRememberedAccounts = (currentUserId: string | undefined) =>
++	listRememberedAccounts().filter((a) => a.id !== currentUserId);
++// /PATCH NEXRAG OPS DASHBOARD
