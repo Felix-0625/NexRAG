@@ -1,5 +1,5 @@
-# Download the published Olist dataset for local, noncommercial demonstration.
-# The dataset stays outside Git because its CC BY-NC-SA 4.0 license applies to the data.
+# 下载公开 Olist 数据供本地非商业演示。
+# 数据适用 CC BY-NC-SA 4.0 许可，下载内容不提交到 Git。
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot

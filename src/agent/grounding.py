@@ -294,6 +294,8 @@ def _invented_link_issues(answer, entries) -> list[str]:
 
 @dataclass
 class EvidenceLedger:
+    """仅记录本轮实际工具结果，约束最终回答的证据类型、引用和数值。"""
+
     required: set[str] = field(default_factory=set)
     entries: list[dict[str, Any]] = field(default_factory=list)
     prompt: str = ""

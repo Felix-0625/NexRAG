@@ -11,7 +11,7 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
-    # 2.60 fixes Anthropic 2.x message parameter unions (upstream #11077).
+    # 2.60 修复 Anthropic 2.x 消息参数的联合类型兼容问题（上游 #11077）。
     "pydantic-ai-slim[openai,anthropic,google]>=2.60.0,<3.0",
     "cryptography>=44.0",
     "qdrant-client>=1.12.0",
@@ -27,8 +27,7 @@ dependencies = [
     "defusedxml>=0.7.1,<1.0",
 ]
 
-# Installed by `uv sync` by default, so scripts/check-code.ps1 always finds
-# pytest in .venv instead of silently falling back to a global binary.
+# uv sync 默认安装开发组，保证检查脚本使用 .venv 中的 pytest，不回退到全局命令。
 [dependency-groups]
 dev = [
     "aiosqlite==0.22.1",
@@ -67,8 +66,7 @@ exclude = [
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
 
-# FastEmbed 0.9 still caps Pillow below 13. Pillow 13 fixes the October 2026
-# image-decoder advisories. Text/BM42 and image compatibility are separately
-# verified; remove this override when FastEmbed officially permits Pillow 13.
+# FastEmbed 0.9 仍限制 Pillow <13；Pillow 13 修复 2026 年 10 月的图片解码漏洞。
+# 文本/BM42 与图片兼容性已分别验证；FastEmbed 正式允许 Pillow 13 后移除此覆盖。
 [tool.uv]
 override-dependencies = ["pillow>=13.0.0,<14"]

@@ -6,7 +6,9 @@ real customer data. `echo` reuses these answers without calling an AI provider.
 This is a repeatable output regression check, **not a new frontend, retrieval,
 authorization enforcement, model quality, or RSI benefit test**.
 
-Use Promptfoo 0.120.0 with Node 22.14.0 (development tools only). From the repository
+The recorded replay uses Promptfoo 0.120.0; use the project's Node 22.23.4 runtime
+(development tools only). This optional tool is installed separately and is not
+covered by the application's dependency audit; audit its installation before use. From the repository
 root, install it outside the application dependencies:
 
 ```powershell

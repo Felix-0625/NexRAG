@@ -9,6 +9,6 @@
 | `tenant-access.yaml` | 两个演示卖家（租户）。管理员可选择两者；把已验证用户的邮箱加到 `users` 下可授予更窄的视图，未列出的非管理员没有业务数据权限 |
 | `knowledge/seller-metrics.md` | 示例知识文档，说明指标口径 |
 
-Windows 下从仓库根目录运行 `start.cmd`，默认配置会在首次启动时下载并导入演示数据。首次登录后，管理员可选择任一演示租户，并在工作空间将 `olist/knowledge/seller-metrics.md` 上传到自己的知识库。
+Windows 下从仓库根目录运行 `start.cmd`，默认配置会在首次启动时下载并导入演示数据。首次登录后，管理员可选择任一演示租户，并在工作空间将 `examples/olist/knowledge/seller-metrics.md` 上传到自己的知识库。
 
 下载与导入分别由 `scripts/fetch-olist.ps1` 和 `scripts/import_olist.py` 完成，结果保存在被 Git 忽略的 `data/` 下。Olist 原始数据的 CC BY-NC-SA 4.0 许可限非商业用途。见 [数据来源](../docs/data-sources.md) 和 [自有业务库接入](../docs/connect-business-database.md)。

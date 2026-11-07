@@ -110,6 +110,8 @@ def _risk(base: dict, cand: dict) -> list[str]:
 
 
 class EvolutionCycle:
+    """从合成训练失败生成候选，经独立分组评测后提交治理层；不直接改生产版本。"""
+
     def __init__(
         self,
         *,

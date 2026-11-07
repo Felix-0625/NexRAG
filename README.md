@@ -42,6 +42,7 @@ BM42 是指定方案，复用 Qdrant/FastEmbed 实现。Qdrant 当前将其标�
 | 使用与配置 | [本地运行](docs/local-run.md)、[模型配置](docs/model-configuration.md)、[工作空间](docs/workspace-ui.md)、[知识库版本](docs/knowledge-versions.md) |
 | 验收与发布 | [逐项验收清单](docs/acceptance/full-functional-acceptance.md)、[前端业务验收](docs/frontend-acceptance.md)、[发布门禁](docs/release-gates.md) |
 | 项目约定 | [安全说明](SECURITY.md)、[参与维护](CONTRIBUTING.md)、[来源与许可](NOTICE.md) |
+| 测试与示例 | [测试导航](tests/README.md)、[评测材料](evals/README.md)、[演示配置](examples/README.md) |
 
 常用检查：
 

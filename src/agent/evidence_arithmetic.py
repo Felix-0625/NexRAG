@@ -82,6 +82,10 @@ def _operand(entries, operand: EvidenceOperand) -> dict:
 def calculate(
     entries, operation: Operation, left: EvidenceOperand, right: EvidenceOperand, precision: int = 2
 ) -> dict:
+    """先核实两端引文和数值，再做十进制定点运算；除零和非法精度直接拒绝。
+
+    同时保留原始结果、舍入显示值与中间量供回答校验；不推断单位或业务口径。
+    """
     if operation not in {"add", "subtract", "multiply", "divide", "percentage", "percent_change"}:
         raise ValueError("Unsupported arithmetic operation")
     if isinstance(precision, bool) or not 0 <= precision <= 8:
@@ -128,6 +132,8 @@ def calculate(
 
 
 def register_arithmetic_tool(agent) -> None:
+    """注册只消费当前证据账本的运算工具，将可修正的输入错误交回模型重试。"""
+
     @agent.tool(strict=False)
     def calculate_evidence_arithmetic(
         ctx: RunContext[AgentDeps],

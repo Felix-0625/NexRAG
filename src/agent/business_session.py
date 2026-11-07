@@ -15,6 +15,8 @@ _current: ContextVar[BusinessReadSession | None] = ContextVar("business_read_ses
 
 
 class BusinessReadSession:
+    """串行保护本轮共享的只读快照，供并发工具复用，不能跨轮次缓存。"""
+
     def __init__(self):
         self._lock = threading.RLock()
         self.snapshot = None
@@ -57,6 +59,7 @@ class BusinessReadSession:
 
 
 def current_business_session():
+    """取当前异步上下文的业务会话；轮次外返回 None。"""
     return _current.get()
 
 

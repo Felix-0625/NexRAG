@@ -56,6 +56,8 @@ def _link_exports(ctx: RunContext[AgentDeps], answer: str) -> str:
 
 
 def register_output_validator(agent) -> None:
+    """注册最终输出校验：先渲染结构化报告，再检查证据，最后附加合法下载链接。"""
+
     @agent.output_validator
     def require_verified_evidence(ctx: RunContext[AgentDeps], answer: str | BusinessReport) -> str:
         """Retry an unsupported final answer after failed or skipped tools.

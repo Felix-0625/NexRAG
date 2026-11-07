@@ -1,4 +1,4 @@
-# Windows entry point. Bootstrap uv locally; no Docker or global Python/Node install.
+# Windows 启动入口：在项目内准备 uv，无需安装全局 Python 或 Node。
 param(
     [switch]$NoBrowser,
     [switch]$SkipModels,

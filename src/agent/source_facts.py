@@ -1,9 +1,7 @@
-"""Bound temporal arithmetic to explicit source layout and request roles.
+"""依据来源布局和请求中的比较方向，绑定时序计算的操作数。
 
-This is a small deterministic layout reader, not a semantic extraction model.
-It accepts labelled cells/clauses and aligned lists, rejects ambiguity, and
-never silently repairs model-selected operands. Unsupported layouts need more
-source evidence rather than an arithmetic-only completion certificate.
+只接受带标签的单元格、分句和对齐列表；遇到歧义直接拒绝，不擅自修正模型选择的操作数。
+未支持的布局需要补充来源证据，不能只凭算术成立就判定任务完成。
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ class SourceFact(BaseModel):
 
 
 def period_request(prompt: str) -> PeriodRequest | None:
-    """Recognize explicit comparison direction, never infer it from date sorting."""
+    """识别请求明确给出的比较方向，不按日期排序猜测新旧角色。"""
     clean = re.sub(r"\S*/(?:19|20)\d{2}/\S+", "", prompt)
     if len(set(re.findall(YEAR, clean))) < 2:
         return None
@@ -88,8 +86,7 @@ def _unit(text: str) -> str:
     ):
         if re.search(pattern, text, re.I):
             units.append(label)
-    # A shared quote/header can contain multiple currencies or scales. Such a
-    # combined string must not make incompatible cells appear to share a unit.
+    # 同一引文或表头可能包含多种币种、数量级，不能据此把不同单元格视为同单位。
     if (
         len(set(units) & {"USD", "CNY", "EUR", "GBP"}) > 1
         or len(set(units) & {"million", "billion", "thousand", "万", "亿"}) > 1
@@ -225,7 +222,7 @@ def source_facts(evidence_id: str, text: str) -> list[SourceFact]:
 
 
 def bind_period_operands(prompt, left, right, source_texts) -> dict | None:
-    """Certify exact metric/period/unit roles or reject before calculating."""
+    """核实指标、期间和单位的角色，无法唯一绑定时在计算前拒绝。"""
     request = period_request(prompt)
     if request is None:
         return None
@@ -265,10 +262,9 @@ def _resolve_fact(request, period, evidence) -> SourceFact:
 
 
 def period_calculation_inputs(prompt: str, entries) -> dict | None:
-    """Expose source-certified roles before model tool selection, not after errors.
+    """在模型选择工具前提供已核实的来源角色，避免依赖失败后的纠正提示。
 
-    The same resolver validates calculator inputs. This prepares arguments and
-    phase readiness; it does not perform the requested calculation or complete it.
+    与计算工具共用同一解析器校验输入；这里只准备参数与阶段状态，不执行计算或判定任务完成。
     """
     request = period_request(prompt)
     if request is None:
