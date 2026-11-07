@@ -1217,7 +1217,7 @@ wheels = [
 
 [[package]]
 name = "nexrag"
-version = "1.1.1"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
