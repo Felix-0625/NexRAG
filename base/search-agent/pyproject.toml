@@ -37,7 +37,7 @@ dev = [
     "pytest-cov>=7.1,<8",
     # ruff is pre-1.0 and lands rule changes in minors, so cap at the next
     # minor — `<1` would be no cap at all and a bump could break CI lint.
-    "ruff>=0.15,<0.16",
+    "ruff>=0.15,<0.18",
     "fakeredis>=2.35,<3",
     "pip-audit>=2.10,<3",
     "bandit>=1.9,<2",
