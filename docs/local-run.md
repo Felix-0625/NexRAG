@@ -47,7 +47,7 @@ NexRAG 以原生进程运行 Open WebUI、单 Agent 后端、AarhusAI 文档摄�
 
 ## 网页和知识库
 
-网页基于固定的 Open WebUI `v0.11.4`。`scripts/prepare-webui.ps1` 从固定提交检出源码，并按序应用 `patches/open-webui/v0.11.4/nexrag/` 的 tenant-selector、ops-dashboard、workspace 三个项目补丁；`webui/` 是生成目录。修改该目录必须同步更新补丁，避免 clone 后丢失改造。旧的两份第三方远端 RAG 补丁已替换为独立原生适配，来源说明见 [NOTICE](../patches/open-webui/NOTICE.md)。
+网页基于固定的 Open WebUI `v0.11.4`。`scripts/prepare-webui.ps1` 从固定提交检出源码，并按序应用 `patches/open-webui/v0.11.4/nexrag/` 的 tenant-selector、ops-dashboard、workspace、security-npm 四个项目补丁，其中 security-npm.diff 只修改 `package.json` 与 `package-lock.json` 以升级有安全修复的前端依赖；`webui/` 是生成目录。修改该目录必须同步更新补丁，避免 clone 后丢失改造。旧的两份第三方远端 RAG 补丁已替换为独立原生适配，来源说明见 [NOTICE](../patches/open-webui/NOTICE.md)。
 
 个人库通过“工作空间 → 知识库”创建。私人库只能由所有者或明确获得授权的账号访问，管理员身份不构成旁路。企业库由管理员维护并按授权下发，员工引用同一个库，管理员内容更新后无需复制到每个员工账号。知识权限和业务数据库范围是两套独立授权。
 
