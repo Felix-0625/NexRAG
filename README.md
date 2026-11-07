@@ -28,12 +28,15 @@ NexRAG 是一个以知识检索和业务数据库联合分析为核心的本地�
 
 BM42 是指定方案，复用 Qdrant/FastEmbed 实现。Qdrant 当前将其标为实验性方法，不能据此宣称优于 BM25 或保证中文召回质量。BGE 阈值也不是校准后的正确率；应使用目标语料的独立评测集验证，详见 [RAG 与原生交付验收](docs/acceptance/rag-native.md)。
 
+## 评测与 RSI
+
+合成评测复用生产 Agent，对回答、工具调用、SQL、引用和安全边界按规则打分。RSI 只用合成训练失败生成提示词和参数候选。通过独立评测门控后，管理员批准灰度，再依据真实运行指标确认晋升。维护入口、数据边界和状态流转见 [评测与 RSI](docs/evaluation-and-rsi.md)。
+
 ## 文档
 
 | 主题 | 文档 |
 | --- | --- |
 | 设计与范围 | [设计说明](docs/design.md)、[交付状态](docs/delivery-status.md) |
-| **评测与自我进化（RSI）** | [评测集、规则评测器、门控、灰度与回滚](docs/evaluation-and-rsi.md) |
 | 长期记忆 | [隔离边界、写入防投毒、冲突消解](docs/long-term-memory.md) |
 | 数据与权限 | [数据可信边界](docs/data-trust-boundaries.md)、[业务数据库接入](docs/connect-business-database.md)、[注册业务指标](docs/business-metrics.md)、[业务查询](docs/business-query.md) |
 | 使用与配置 | [本地运行](docs/local-run.md)、[模型配置](docs/model-configuration.md)、[工作空间](docs/workspace-ui.md)、[知识库版本](docs/knowledge-versions.md) |
@@ -66,6 +69,6 @@ python scripts/run_experiment.py --splits holdout regression --repeats 2     # �
 
 本项目自身代码遵循 [MPL-2.0](LICENSE)。AarhusAI 基座各自保留 `LICENSE.txt` 和原作者版权，修改应按其许可公开；不得将上游源码当作本项目原创。
 
-Open WebUI 源码不随仓库提交。`scripts/prepare-webui.ps1` 检出 `AarhusAI/open-webui` 的固定版本 `v0.11.4`（提交 `8bd8b4fac5e059578ac0c74b3c18d11139f88b7d`），依次应用 `patches/open-webui/v0.11.4/nexrag/` 内的 tenant-selector、ops-dashboard、workspace、security-npm 四个补丁，其中 security-npm.diff 只修改 `package.json` 与 `package-lock.json` 以升级有安全修复的前端依赖。上游品牌与许可条款仍适用，见 [Open WebUI License](https://docs.openwebui.com/license/)。复用的原始补丁归属见 [补丁声明](patches/open-webui/NOTICE.md)。本项目与 Open WebUI、AarhusAI 官方没有隶属或背书关系。
+Open WebUI 源码不随仓库提交。`scripts/prepare-webui.ps1` 检出 `AarhusAI/open-webui` 的固定版本 `v0.11.4`（提交 `8bd8b4fac5e059578ac0c74b3c18d11139f88b7d`），依次应用 `patches/open-webui/v0.11.4/nexrag/` 内的 tenant-selector、ops-dashboard、workspace、security-npm 四个补丁，其中 security-npm.diff 维护依赖清单、锁和对应的 ESLint 配置。上游品牌与许可条款仍适用，见 [Open WebUI License](https://docs.openwebui.com/license/)。复用的原始补丁归属见 [补丁声明](patches/open-webui/NOTICE.md)。本项目与 Open WebUI、AarhusAI 官方没有隶属或背书关系。
 
-Olist 示例仅用于演示，原始许可与使用限制见 [数据来源](docs/data-sources.md)。开源代码不等于附带商用示例数据许可，也不包含模型权重的重新授权。
+Olist 配置和复现步骤见 [示例](examples/README.md)。原始数据按 CC BY-NC-SA 4.0 使用，模型权重和第三方资源各自适用原许可。见 [来源与许可](NOTICE.md)。

@@ -1,7 +1,7 @@
 name: NexRAG CI
 
-# Core and maintained native retrieval/ingestion paths are all release gates.
 on:
+  workflow_call:
   pull_request:
     paths: &paths
       - "src/**"
@@ -9,17 +9,23 @@ on:
       - "tests/**"
       - "base/ingestion-service/**"
       - "base/retrieval-agent/**"
+      - "base/search-agent/**"
       - "patches/**"
       - "start.cmd"
       - "start.ps1"
       - "pyproject.toml"
       - "uv.lock"
-      - ".github/workflows/ci.yml"
+      - ".github/**"
+      - "**/*.md"
+      - "examples/**"
   push:
     branches:
       - main
       - develop
     paths: *paths
+
+permissions:
+  contents: read
 
 jobs:
   lock:
@@ -31,7 +37,11 @@ jobs:
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
-      - run: uv lock --check
+      - shell: bash
+        run: |
+          for project in . base/ingestion-service base/retrieval-agent base/search-agent; do
+            uv lock --check --project "$project"
+          done
 
   lint:
     name: Lint (ruff)
@@ -45,6 +55,7 @@ jobs:
       - run: uv sync --frozen --group dev --python 3.12
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run python scripts/check-repository.py
 
   test:
     name: Native core and patched WebUI contracts
@@ -87,10 +98,10 @@ jobs:
       - name: Install pinned browser dependencies without executable lifecycle hooks
         working-directory: webui
         run: npm ci --ignore-scripts --no-audit --no-fund
-        env:
-          CYPRESS_INSTALL_BINARY: '0'
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
       - run: node scripts/check-webui.mjs
+      - name: Build the patched browser interface
+        working-directory: webui
+        run: node --max-old-space-size=6144 node_modules/vite/bin/vite.js build
 
   rag-services:
     name: RAG service regression (${{ matrix.service }})
@@ -98,7 +109,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [ingestion-service, retrieval-agent]
+        service: [ingestion-service, retrieval-agent, search-agent]
     defaults:
       run:
         working-directory: base/${{ matrix.service }}
@@ -107,11 +118,11 @@ jobs:
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
-      - run: uv sync --frozen --extra dev --python 3.12
+      - run: uv sync --frozen --all-extras --all-groups --python 3.12
       - run: uv run pytest -q
 
   npm-audit:
-    name: Known frontend vulnerabilities (critical)
+    name: Known npm vulnerabilities
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,11 +132,8 @@ jobs:
       - name: Prepare pinned WebUI source
         shell: pwsh
         run: ./scripts/prepare-webui.ps1
-      # high 级别的剩余项需要上游框架主版本升级，已在 docs/acceptance/security-audit.md 记录；
-      # 这里只拦截新出现的 critical。
-      - name: Audit production dependencies
-        working-directory: webui
-        run: npm audit --omit=dev --audit-level=critical
+      - name: Reject critical and unreviewed high advisories
+        run: node scripts/audit-webui.mjs
 
   dependency-audit:
     name: Known Python vulnerabilities (${{ matrix.scope }})
@@ -133,9 +141,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scope: [core, ingestion, retrieval, webui]
+        scope: [core, ingestion, retrieval, search, webui]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
       - shell: pwsh
         run: ./scripts/audit-dependencies.ps1 -Scope ${{ matrix.scope }}
+
+  ready:
+    name: Release readiness
+    if: always()
+    needs: [lock, lint, test, webui, rag-services, npm-audit, dependency-audit]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every gate to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ["RESULTS"])
+          failed = [name for name, job in results.items() if job["result"] != "success"]
+          if failed:
+              raise SystemExit("Failed release gates: " + ", ".join(failed))
+          print("All release gates passed")
+          PY

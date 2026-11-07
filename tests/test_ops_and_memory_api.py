@@ -118,6 +118,17 @@ def test_feedback_only_on_own_trace(client, isolated_ops):
     )
     score = isolated_ops.query_one("SELECT * FROM scores WHERE name = 'user_rating'")
     assert score["value"] == 0.0 and score["source"] == "user"
+    assert (
+        client.post(
+            "/v1/ops/feedback",
+            json={"trace_id": "chatcmpl-x", "rating": 1},
+            headers=headers("user-1"),
+        ).status_code
+        == 200
+    )
+    assert isolated_ops.query("SELECT value FROM scores WHERE name = 'user_rating'") == [
+        {"value": 1.0}
+    ]
 
 
 def test_agent_run_records_trace_and_ingests_memory(isolated_ops, memory, monkeypatch):

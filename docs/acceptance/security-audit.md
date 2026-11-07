@@ -185,3 +185,20 @@ FastEmbed 0.8.1/0.9.0 仍声明 Pillow `<13`，但 [Pillow 13.0.0 官方安全�
 ### 历史密钥
 
 对全部 Git 历史搜索私钥头、`sk-`、`AKIA`、`ghp_` 等常见格式，无命中。不等同于熵分析，也不覆盖本机未提交的 `.env`（已被 `.gitignore` 排除）。
+
+## 2026-11-07 发布后复扫
+
+基线为远程 `main` 的 `95714bf`。本轮覆盖固定依赖、Git 历史和高风险调用链，并对修改处运行回归。历史验收结果保留在上文。
+
+| 范围 | 复扫结果 |
+| --- | --- |
+| Python 五套锁文件 | 核心、摄入、检索、搜索、WebUI 后端均未命中已知漏洞。原先遗漏的可选搜索服务由 12 个包命中 61 条记录降到零，搜索锁已加入 CI 门禁。 |
+| npm 生产锁 | 移除无用适配器前 15 个条目，其中 3 个 high 来自同一条 `kokoro-js → @huggingface/transformers → sharp` 依赖链，0 个 critical。项目保留可选浏览器朗读，原生运行默认不自动朗读。npm 未给出该链的可用修复。 |
+| npm 全锁 | 最终 25 个条目，3 个 high、0 个 critical。移除未使用的 Cypress、Vitest、自动和 Node 部署适配器后，Cypress 解压链告警消除。仅保留可选朗读的高危链。 |
+| Git 历史 | Gitleaks v8.30.1 扫描 `origin/main` 全部 13 个提交。4 处命中均核对为测试夹具，未发现实际凭据。 |
+
+Node 更新至 22.23.4，启动器按官方 SHA-256 校验回退下载。Vite 6.4.5 消除了开发服务相关告警，未使用的 Vitest 与 Cypress 已从最终交付依赖中移除。新增高危或任何严重公告会使发布门禁失败，例外按包名和三条已审核公告精确匹配。见 [Node 发布说明](https://nodejs.org/en/blog/release/v22.23.4) 和 [Vite 发布说明](https://github.com/vitejs/vite/releases/tag/v6.4.5)。
+
+可选搜索服务的网页补全文本以前先检查 DNS，再把原域名交给 HTTP 客户端连接，两次解析之间可被重绑定。现在每一跳都连接到通过校验的数值 IP，沿用原 Host 和 TLS SNI，拒绝内网、回环、保留地址和恶意重定向，网页抓取与搜索提供商连接使用不同客户端。回归验证了固定 IP、端口、SNI 和拒绝内网跳转。见 [HTTPX 的 SNI 扩展](https://www.python-httpx.org/advanced/extensions/#sni_hostname) 与 [OWASP SSRF 防护](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)。
+
+运营 API 移除了旧知识库面板专用的三个路由。管理员权限依赖独立维护，业务租户管理按原路径保留。反馈按回答保存最近一票，防止重复请求放大灰度评分。RSI 的验证集隔离、事务状态转换及指定版本回滚见 [评测与 RSI](../evaluation-and-rsi.md)。

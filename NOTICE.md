@@ -1,22 +1,16 @@
 # 来源与许可声明
 
-NexRAG 自有源码采用根目录 MPL-2.0。包含和修改的 AarhusAI ingestion-service、retrieval-agent、search-agent 分别保留其目录中的原始许可证及版权声明。
+NexRAG 自有源码采用 [MPL-2.0](LICENSE)。摄入、检索和搜索服务沿用各自的 AarhusAI 源码与 MPL-2.0 许可，分发时保留版权和原许可证。见 [摄入](base/ingestion-service/LICENSE.txt)、[检索](base/retrieval-agent/LICENSE.txt)、[搜索](base/search-agent/LICENSE.txt)。
 
-Open WebUI 不包含在源码交付中，由准备脚本获取固定版本并应用补丁。使用时仍须遵守该固定上游版本的许可证和品牌条款。补丁来源与本项目独立实现的桥接边界见 [patches/open-webui/NOTICE.md](patches/open-webui/NOTICE.md)。本项目未获得 Open WebUI 或 AarhusAI 的官方背书。
+Open WebUI 由准备脚本获取固定的 v0.11.4 源码并应用本项目补丁。该版本含 Open WebUI License 及历史许可，适用源码与二进制分发的署名要求。按固定版本第 4 条，在滚动 30 天内超过 50 名直接终端用户的部署或分发中，改动或移除其品牌须取得书面许可或相应企业授权。NexRAG 是独立集成项目。见 [固定版本许可](https://raw.githubusercontent.com/AarhusAI/open-webui/8bd8b4fac5e059578ac0c74b3c18d11139f88b7d/LICENSE) 与 [补丁来源](patches/open-webui/NOTICE.md)。
 
-示例 Olist 数据的来源和使用限制见 [docs/data-sources.md](docs/data-sources.md)。模型权重、运行时二进制与第三方依赖分别受其自身许可约束；本项目许可证不重新授权它们。
+## 前端字体
 
-## 第三方许可核对（2026-11-05）
+- **Inter 和 Vazirmatn** 均为 SIL OFL 1.1，允许免费商用和随应用分发。两款 TTF 均有嵌入版权和许可声明，`app.css` 声明 `@font-face`，`tailwind.css` 将两者加入字体栈。未发现未引用的静态字体。再分发须保留版权和许可，字体本身不可单独销售。见 [Inter](https://github.com/rsms/inter/blob/master/LICENSE.txt)、[Vazirmatn](https://github.com/rastikerdar/vazirmatn/blob/master/OFL.txt)、[OFL FAQ](https://openfontlicense.org/ofl-faq/)。
+- **KaTeX** 程序采用 MIT，随 npm 包安装的数学字体文件自带 OFL 1.1 声明及保留字体名。公式渲染依赖这些字体。见 [KaTeX 许可](https://github.com/KaTeX/KaTeX/blob/main/LICENSE)。
 
-以下是对随项目分发或默认安装的依赖做的抽查，不是完整的法律审查。
+## 组件与其他资源
 
-| 项目 | 许可 | 说明 |
-| --- | --- | --- |
-| Inter、Vazirmatn 字体（WebUI 静态资源） | SIL OFL 1.1 | 字体文件的 name 表中写明 OFL 1.1，可免费商用与再分发；不得单独售卖字体本身。两个字体都被 `@font-face` 引用，没有遗留未使用的字体文件 |
-| KaTeX 字体（随 `katex` npm 包） | SIL OFL 1.1 | 公式渲染使用，随依赖安装 |
-| Python 依赖 | 绝大多数为 MIT / BSD / Apache-2.0 | 另有 `certifi`、`tqdm`（MPL-2.0 部分）、`py_rust_stemmers`（元数据缺失，上游 LICENSE 文件为 MIT） |
-| `psycopg` / `psycopg-binary` | LGPL-3.0 | 作为独立 Python 包导入使用（连接 PostgreSQL 业务源），本项目未修改其源码。若需再分发包含它的二进制包，请先核对 LGPL-3.0 的具体义务 |
-| 前端 npm 生产依赖 | 660 个包中 647 个（98%）为 MIT / ISC / BSD / Apache-2.0 等宽松许可 | 少量 MPL-2.0（`lightningcss`、`pyodide`）、`jszip`（MIT OR GPL-3.0，取 MIT）、`@img/sharp-*` 原生库包（Apache-2.0 AND LGPL-3.0-or-later） |
-| Open WebUI v0.11.4 | BSD-3-Clause 加品牌条款 | 条款 4 禁止在超过 50 名终端用户（30 天滚动）的部署中修改或移除 “Open WebUI” 品牌，除非获得书面许可或企业授权。本项目的补丁保留其品牌标识，规模超过该阈值前须单独取得授权 |
-
-此文件是归属与使用边界说明，不是对全部传递依赖或适用法律的法律意见。
+- 前端组件的许可证以锁定 npm 版本为准。Svelte、SvelteKit、Vite、Mermaid 等采用 MIT。DOMPurify 可选 Apache-2.0 或 MPL-2.0，JSZip 可选 MIT 或 GPL-3.0-or-later。Lightning CSS、Pyodide 使用 MPL-2.0，部分 sharp 平台二进制含 LGPL-3.0-or-later。锁文件缺少许可元数据的 `khroma`、`svelte-toolbelt` 和 `xmlhttprequest-ssl` 已对照安装包的许可文件。
+- Python 依赖中，`certifi` 和 `tqdm` 含 MPL-2.0 许可，`psycopg` 及其二进制包使用 LGPL-3.0。本项目通过独立依赖包调用它们。打包再分发时按目标平台和实际包含的文件核对相应义务。
+- Olist 原始数据仅限非商业用途。项目不附带原始数据或模型权重，所下载的模型和运行时二进制各自适用原许可。见 [数据来源](docs/data-sources.md)。

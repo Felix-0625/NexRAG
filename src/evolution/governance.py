@@ -22,7 +22,7 @@ import json
 from typing import Any
 
 from src.config import settings
-from src.evolution.artifacts import ArtifactRegistry, registry
+from src.evolution.artifacts import KINDS, ArtifactRegistry
 from src.evolution.canary import enough_samples, metrics_for_proposal, regressed_metrics
 from src.midplatform.ops_store import OpsStore, dumps, get_ops_store, new_id, now
 
@@ -36,7 +36,7 @@ class GovernanceError(ValueError):
 class Governance:
     def __init__(self, store: OpsStore | None = None, reg: ArtifactRegistry | None = None):
         self._store = store
-        self.reg = reg or registry
+        self.reg = reg or ArtifactRegistry(store)
 
     @property
     def store(self) -> OpsStore:
@@ -110,53 +110,61 @@ class Governance:
         priority: float,
     ) -> tuple[str, str]:
         """创建或合并提案，返回 (proposal_id, action)。"""
-        existing = self.open_for_kind(kind)
-        at = now()
-        if existing and existing["cluster_key"] == cluster_key and existing["status"] != "canary":
-            # 同一问题再次出现：刷新证据和候选，而不是新建提案。
-            self.reg.set_label(existing["candidate_id"], "rejected")
+        with self.store.transaction(immediate=True):
+            if baseline_id != self.reg.production(kind).id:
+                self.reg.set_label(candidate_id, "rejected")
+                return "", "stale"
+            existing = self.open_for_kind(kind)
+            at = now()
+            if (
+                existing
+                and existing["cluster_key"] == cluster_key
+                and existing["status"] != "canary"
+            ):
+                # 同一问题再次出现：刷新证据和候选，而不是新建提案。
+                self.reg.set_label(existing["candidate_id"], "rejected")
+                self.store.execute(
+                    "UPDATE proposals SET candidate_id = ?, baseline_id = ?, evidence_count = ?, report = ?, "
+                    "priority = ?, status = 'pending_review', updated_at = ? WHERE id = ?",
+                    (
+                        candidate_id,
+                        baseline_id,
+                        evidence_count,
+                        dumps(report),
+                        priority,
+                        at,
+                        existing["id"],
+                    ),
+                )
+                return existing["id"], "merged"
+            if existing:
+                # 该产物已有其他未决提案：不叠加修改。
+                self.reg.set_label(candidate_id, "rejected")
+                return existing["id"], "deferred"
+            if self.queue_size() >= settings.PROPOSAL_QUEUE_LIMIT:
+                self.reg.set_label(candidate_id, "rejected")
+                return "", "queue_full"
+            proposal_id = new_id()
             self.store.execute(
-                "UPDATE proposals SET candidate_id = ?, baseline_id = ?, evidence_count = ?, report = ?, "
-                "priority = ?, status = 'pending_review', updated_at = ? WHERE id = ?",
+                "INSERT INTO proposals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
+                    proposal_id,
+                    kind,
+                    cluster_key,
                     candidate_id,
                     baseline_id,
+                    "pending_review",
                     evidence_count,
                     dumps(report),
                     priority,
+                    None,
+                    None,
                     at,
-                    existing["id"],
+                    at,
+                    None,
                 ),
             )
-            return existing["id"], "merged"
-        if existing:
-            # 该产物已有其他未决提案：不叠加修改。
-            self.reg.set_label(candidate_id, "rejected")
-            return existing["id"], "deferred"
-        if self.queue_size() >= settings.PROPOSAL_QUEUE_LIMIT:
-            self.reg.set_label(candidate_id, "rejected")
-            return "", "queue_full"
-        proposal_id = new_id()
-        self.store.execute(
-            "INSERT INTO proposals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                proposal_id,
-                kind,
-                cluster_key,
-                candidate_id,
-                baseline_id,
-                "pending_review",
-                evidence_count,
-                dumps(report),
-                priority,
-                None,
-                None,
-                at,
-                at,
-                None,
-            ),
-        )
-        return proposal_id, "created"
+            return proposal_id, "created"
 
     def _transition(
         self, proposal_id: str, allowed: tuple[str, ...], status: str, **fields: Any
@@ -173,99 +181,143 @@ class Governance:
         )
         return proposal
 
-    def approve(self, proposal_id: str, reviewer: str, note: str | None = None) -> None:
-        """人工批准只启动金丝雀，绝不直接晋升。"""
-        proposal = self.get(proposal_id)
-        if proposal and proposal["baseline_id"] != self.reg.production(proposal["kind"]).id:
-            self._transition(proposal_id, ("pending_review",), "stale")
-            raise GovernanceError("Production changed since evaluation; proposal marked stale")
-        proposal = self._transition(
-            proposal_id,
-            ("pending_review",),
-            "canary",
-            reviewer=reviewer,
-            review_note=note,
-            canary_started_at=now(),
+    def _baseline_current(self, proposal: dict[str, Any]) -> bool:
+        """候选的评测结果只适用于当时的完整产物组合。"""
+        versions = proposal["report"].get("effect", {}).get("baseline_versions", {})
+        # 旧报告未证明两种产物的基线，也可能使用过验证集失败证据。
+        return versions.keys() == set(KINDS) and all(
+            self.reg.production(kind).id == version for kind, version in versions.items()
         )
-        self.reg.set_label(proposal["candidate_id"], "staging")
+
+    def approve(
+        self,
+        proposal_id: str,
+        reviewer: str,
+        note: str | None = None,
+        *,
+        expected_candidate_id: str | None = None,
+    ) -> None:
+        """人工批准只启动金丝雀，绝不直接晋升。"""
+        with self.store.transaction(immediate=True):
+            proposal = self.get(proposal_id)
+            if not proposal or proposal["status"] != "pending_review":
+                raise GovernanceError("Only a pending proposal can be approved")
+            if (
+                expected_candidate_id is not None
+                and proposal["candidate_id"] != expected_candidate_id
+            ):
+                raise GovernanceError("Proposal changed; reopen it before approving")
+            stale = not self._baseline_current(proposal)
+            if stale:
+                self._transition(proposal_id, ("pending_review",), "stale")
+            else:
+                if self.list("canary", limit=1):
+                    raise GovernanceError("Finish the current canary before starting another")
+                self._transition(
+                    proposal_id,
+                    ("pending_review",),
+                    "canary",
+                    reviewer=reviewer,
+                    review_note=note,
+                    canary_started_at=now(),
+                )
+                self.reg.set_label(proposal["candidate_id"], "staging")
+        if stale:
+            raise GovernanceError("Evaluation baseline must be refreshed; proposal marked stale")
 
     def reject(self, proposal_id: str, reviewer: str, note: str | None = None) -> None:
         """驳回待审核或已过期的提案并废弃其候选版本；其他状态抛出 GovernanceError。"""
-        proposal = self._transition(
-            proposal_id,
-            ("pending_review", "stale"),
-            "rejected",
-            reviewer=reviewer,
-            review_note=note,
-        )
-        self.reg.set_label(proposal["candidate_id"], "rejected")
+        with self.store.transaction(immediate=True):
+            proposal = self._transition(
+                proposal_id,
+                ("pending_review", "stale"),
+                "rejected",
+                reviewer=reviewer,
+                review_note=note,
+            )
+            self.reg.set_label(proposal["candidate_id"], "rejected")
 
     def promote(self, proposal_id: str, reviewer: str) -> None:
         """第二次人工确认。灰度指标一律由运营库重新计算，调用方无法传入摘要绕过门控。"""
-        proposal = self.get(proposal_id)
-        if not proposal or proposal["status"] != "canary":
-            raise GovernanceError("Only a proposal in canary can be promoted")
-        elapsed_days = (now() - (proposal["canary_started_at"] or now())) / 86_400
-        if elapsed_days < settings.CANARY_MIN_DAYS:
-            raise GovernanceError(
-                f"Canary has run {elapsed_days:.1f} of {settings.CANARY_MIN_DAYS} days"
+        with self.store.transaction(immediate=True):
+            proposal = self.get(proposal_id)
+            if not proposal or proposal["status"] != "canary":
+                raise GovernanceError("Only a proposal in canary can be promoted")
+            elapsed_days = (now() - (proposal["canary_started_at"] or now())) / 86_400
+            if elapsed_days < settings.CANARY_MIN_DAYS:
+                raise GovernanceError(
+                    f"Canary has run {elapsed_days:.1f} of {settings.CANARY_MIN_DAYS} days"
+                )
+            if not self._baseline_current(proposal):
+                raise GovernanceError(
+                    "Production changed during canary; evaluate again against the current baseline"
+                )
+            canary_metrics = metrics_for_proposal(self.store, proposal)
+            if not enough_samples(canary_metrics):
+                raise GovernanceError(
+                    "Canary requires at least 20 candidate and 20 control observations"
+                )
+            if regressed_metrics(canary_metrics, settings.CANARY_MAX_DROP):
+                raise GovernanceError("Canary performance regressed; promotion is blocked")
+            candidate = self.reg.get(proposal["candidate_id"])
+            if candidate is None:
+                raise GovernanceError("The candidate artifact no longer exists")
+            # 记录谱系，使回滚能恢复到确切的前任版本。
+            self.store.execute(
+                "UPDATE artifact_versions SET parent_id = ? WHERE id = ?",
+                (proposal["baseline_id"], candidate.id),
             )
-        if self.reg.production(proposal["kind"]).id != proposal["baseline_id"]:
-            raise GovernanceError(
-                "Production changed during canary; evaluate again against the current baseline"
+            self.reg.set_label(candidate.id, "production")
+            report = {**proposal["report"], "canary_metrics": canary_metrics}
+            self._transition(
+                proposal_id, ("canary",), "promoted", reviewer=reviewer, report=dumps(report)
             )
-        canary_metrics = metrics_for_proposal(self.store, proposal)
-        if not enough_samples(canary_metrics):
-            raise GovernanceError(
-                "Canary requires at least 20 candidate and 20 control observations"
-            )
-        if regressed_metrics(canary_metrics, settings.CANARY_MAX_DROP):
-            raise GovernanceError("Canary performance regressed; promotion is blocked")
-        candidate = self.reg.get(proposal["candidate_id"])
-        if candidate is None:
-            raise GovernanceError("The candidate artifact no longer exists")
-        # 记录谱系，使回滚能恢复到确切的前任版本。
-        self.store.execute(
-            "UPDATE artifact_versions SET parent_id = ? WHERE id = ?",
-            (proposal["baseline_id"], candidate.id),
-        )
-        self.reg.set_label(candidate.id, "production")
-        report = {**proposal["report"], "canary_metrics": canary_metrics}
-        self._transition(
-            proposal_id, ("canary",), "promoted", reviewer=reviewer, report=dumps(report)
-        )
 
-    def rollback(self, proposal_id: str, reason: str, reviewer: str = "system") -> None:
+    def rollback(
+        self, proposal_id: str, reason: str, reviewer: str = "system", *, canary_only: bool = False
+    ) -> bool:
         """终止金丝雀，或把已晋升的版本回滚到其前任。"""
-        proposal = self.get(proposal_id)
-        if not proposal:
-            raise GovernanceError("Unknown proposal")
-        if proposal["status"] == "canary":
-            self.reg.set_label(proposal["candidate_id"], "rejected")
-        elif proposal["status"] == "promoted":
-            self.reg.rollback(proposal["kind"])
-        else:
-            raise GovernanceError("Only canary or promoted proposals can be rolled back")
-        self._transition(
-            proposal_id,
-            ("canary", "promoted"),
-            "rolled_back",
-            reviewer=reviewer,
-            review_note=reason,
-        )
+        with self.store.transaction(immediate=True):
+            proposal = self.get(proposal_id)
+            if not proposal:
+                raise GovernanceError("Unknown proposal")
+            if canary_only and proposal["status"] != "canary":
+                return False
+            if proposal["status"] == "canary":
+                self.reg.set_label(proposal["candidate_id"], "rejected")
+            elif proposal["status"] == "promoted":
+                current = self.reg.production(proposal["kind"])
+                if current.id != proposal["candidate_id"]:
+                    raise GovernanceError("Only the current production version can be rolled back")
+                baseline = self.reg.get(proposal["baseline_id"])
+                if not baseline or baseline.kind != proposal["kind"]:
+                    raise GovernanceError("The rollback target no longer exists")
+                self.reg.set_label(baseline.id, "production")
+                self.reg.set_label(current.id, "rejected")
+            else:
+                raise GovernanceError("Only canary or promoted proposals can be rolled back")
+            self._transition(
+                proposal_id,
+                ("canary", "promoted"),
+                "rolled_back",
+                reviewer=reviewer,
+                review_note=reason,
+            )
+            return True
 
     def housekeeping(self) -> dict[str, int]:
         """使过期提案失效，并把基线已变动的提案标记为 stale。"""
-        at = now()
-        expired = 0
-        for proposal in self.list("pending_review") + self.list("stale"):
-            if at - proposal["created_at"] > settings.PROPOSAL_TTL_DAYS * 86_400:
-                self._transition(proposal["id"], ("pending_review", "stale"), "expired")
-                self.reg.set_label(proposal["candidate_id"], "rejected")
-                expired += 1
-        stale = 0
-        for proposal in self.list("pending_review"):
-            if proposal["baseline_id"] != self.reg.production(proposal["kind"]).id:
-                self._transition(proposal["id"], ("pending_review",), "stale")
-                stale += 1
-        return {"expired": expired, "stale": stale}
+        with self.store.transaction(immediate=True):
+            at = now()
+            expired = 0
+            for proposal in self.list("pending_review") + self.list("stale"):
+                if at - proposal["created_at"] > settings.PROPOSAL_TTL_DAYS * 86_400:
+                    self._transition(proposal["id"], ("pending_review", "stale"), "expired")
+                    self.reg.set_label(proposal["candidate_id"], "rejected")
+                    expired += 1
+            stale = 0
+            for proposal in self.list("pending_review"):
+                if not self._baseline_current(proposal):
+                    self._transition(proposal["id"], ("pending_review",), "stale")
+                    stale += 1
+            return {"expired": expired, "stale": stale}

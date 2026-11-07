@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src import __version__
 from src.api.directory_routes import router as directory_router
 from src.api.exports_routes import router as exports_router
 from src.api.mcp_routes import router as mcp_router
@@ -11,13 +12,14 @@ from src.api.model_routes import router as model_router
 from src.api.ops_routes import router as ops_router
 from src.api.policy_routes import router as policy_router
 from src.api.routes import router as api_router
+from src.api.tenant_routes import router as tenant_router
 from src.api.workspace_routes import router as workspace_router
 from src.config import settings
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="NexRAG local agentic RAG backend service.",
-    version="1.0.0",
+    version=__version__,
 )
 
 # Open WebUI 后端以服务端到服务端方式调用 NexRAG（Authorization 头，无 cookie），
@@ -38,6 +40,7 @@ app.add_middleware(
 # 注册 OpenAI 兼容的 API 路由。
 app.include_router(api_router, prefix=settings.API_V1_STR)
 app.include_router(ops_router, prefix=settings.API_V1_STR)
+app.include_router(tenant_router, prefix=settings.API_V1_STR)
 app.include_router(memory_router, prefix=settings.API_V1_STR)
 app.include_router(exports_router, prefix=settings.API_V1_STR)
 app.include_router(workspace_router, prefix=settings.API_V1_STR)

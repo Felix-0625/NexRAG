@@ -2,7 +2,7 @@
 
 固定基座：[AarhusAI/open-webui](https://github.com/AarhusAI/open-webui)，版本 `v0.11.4`，提交 `8bd8b4fac5e059578ac0c74b3c18d11139f88b7d`。保留该版本源码中的 Open WebUI License、版权声明及来源/品牌标识；这些文件不因本项目的 MPL 声明改变许可。品牌条款及例外以固定版本 `LICENSE` 原文为准。
 
-当前准备链按顺序应用本项目维护的 `nexrag/tenant-selector.diff`、`nexrag/ops-dashboard.diff`、`nexrag/workspace.diff`、`nexrag/security-npm.diff`。最后一个只修改 `package.json` 与 `package-lock.json`：用 `npm audit fix` 升级有安全修复的前端依赖，并按 SheetJS 官方文档改用其 CDN 发布的 `xlsx` 0.20.3（npm 仓库上的 0.18.5 已停止更新且存在已知漏洞）。`webui/` 是按固定提交生成的忽略目录，不是另一个可独立发布的本项目原创源码树。
+准备脚本依次应用 `nexrag/tenant-selector.diff`、`nexrag/ops-dashboard.diff`、`nexrag/workspace.diff` 和 `nexrag/security-npm.diff`。依赖补丁维护 `package.json`、锁文件和 ESLint 配置，移除未使用的测试工具及部署适配器，固定 Vite 6.4.5 与 Svelte 插件 5.1.1，并使用 SheetJS 官方 CDN 发布的 `xlsx` 0.20.3。生成的 `webui/` 被 Git 忽略，项目修改以补丁为准。见 [安全复扫记录](../../docs/acceptance/security-audit.md)。
 
 2026-10-29 替换了先前依赖的 AarhusAI 编排仓库补丁 `template-for-rag-queries.diff` 和 `added-support-for-external-rag-ingestion-and-retrieval.diff`。核查其原始 [编排仓库](https://github.com/AarhusAI/aarhusai-docker) 时未取得可用的独立再分发许可文本，因此没有声称本项目许可可覆盖它们：这两个补丁及历史编排/补丁资产均已从交付文件移除；生成源码通过三方对照恢复为固定上游与本项目修改，旧 `retrieval/external_service.py` 也已移除。历史备份仅存放于被忽略的本地 `.local-run/`，不属于开源交付。
 

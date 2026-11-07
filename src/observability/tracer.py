@@ -200,21 +200,17 @@ class Tracer:
             log.exception("Failed to record trace %s", trace.trace_id)
             return None
 
-    def add_score(
-        self,
-        trace_id: str,
-        name: str,
-        value: float,
-        *,
-        source: str,
-        data_type: str = "numeric",
-        comment: str | None = None,
-    ) -> None:
-        """为已有 trace 附加一个分数（用户反馈、judge、人工）。"""
-        self.store.execute(
-            "INSERT INTO scores VALUES (?,?,?,?,?,?,?,?)",
-            (new_id(), trace_id, name, float(value), data_type, source, comment, now()),
-        )
+    def record_rating(self, trace_id: str, value: float, comment: str | None = None) -> None:
+        """替换同一回答的旧评价，重试或改票均只计一次。"""
+        with self.store.transaction() as conn:
+            conn.execute(
+                "DELETE FROM scores WHERE trace_id = ? AND name = 'user_rating' AND source = 'user'",
+                (trace_id,),
+            )
+            conn.execute(
+                "INSERT INTO scores VALUES (?,?,?,?,?,?,?,?)",
+                (new_id(), trace_id, "user_rating", value, "numeric", "user", comment, now()),
+            )
 
     def purge_expired(self) -> int:
         """删除超过 TRACE_RETENTION_DAYS 的 trace；数据集副本保留。"""

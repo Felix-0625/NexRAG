@@ -1,34 +1,25 @@
-# NexRAG 实施与验收计划
+# 交付状态
 
-更新至 2026-10-29。本项目是基于 Open WebUI 与 AarhusAI 摄入/检索代码的本地 Agentic RAG；以知识库和受授权业务数据库联合分析为核心，单 Agent 调用工具，轻量运营 SQLite 管理权限与治理元数据。
+本项目以 Windows x64 本地原生运行和 GitHub 源码发布交付。网页来自固定版本 Open WebUI，本项目维护 Agent、数据权限、集成桥、运营能力与补丁。入口为 `start.cmd`，首次运行需要联网下载依赖和模型。
 
-本表区分实现与验收。测试通过、服务可达、网页业务正确各有证据，不能互相替代。最终逐项结论以 [前端验收](frontend-acceptance.md) 及 [逐项验收清单](acceptance/full-functional-acceptance.md) 为准，未完成项继续保留。
+## v1.1.0 的交付范围
 
-## 当前交付范围
+- 单 Agent 联合查询知识与只读业务数据，包含同轮证据校验、文件分析和导出。
+- 账号分发、业务租户和知识授权、模型及 MCP 管理，外发受资源分级约束。
+- Child Dense + BM42/RRF → BGE 重排 → Parent 展开。
+- 用户隔离的长期记忆、合成评测、版本化提示词与参数、人工审批和灰度回滚。
+- 可重放的四个 WebUI 补丁、依赖锁、Ruff/Pytest、依赖审计和发布门禁。
 
-| 模块 | 当前实现 | 交付需要的证据与剩余边界 |
-| --- | --- | --- |
-| 本地启动 | Windows x64 `start.cmd` 准备独立 Python/Node/Qdrant/Ollama、WebUI 固定补丁并启动回环服务；移除容器编排与构建入口 | 首次依赖/模型下载需要网络；必须另做全新 clone 验证，既有缓存启动不能替代 |
-| 账号与组织 | 管理员分发账号、首次改密、重置/登录审计、部门/职级/直属上级、显式业务/知识/模型/工具权限 | 报告后端回归与真实网页分发、改密、撤权的不同完成程度；组织关系不隐式继承权限 |
-| 数据安全 | 服务端签名身份、业务范围授权、只读源连接、授权行快照、SQL AST 检查、机密禁止外发 | SQLite 真实业务流程与 PostgreSQL 专用角色分别验收；不能凭模拟连接声称真实角色通过 |
-| 知识库 | 私人所有权隔离（管理员无旁路）、企业授权库、公开企业库全员下发、自动版本/发布/快照下载 | 内容与索引更新、员工只读同步、撤权与历史下载都要实测；下载快照不等于一键回滚 |
-| RAG | Child Dense + BM42、Qdrant IDF/RRF、BGE 对 Child 重排 Top-3、Parent Payload 展开去重 | 原生摄入和检索专项、真实模型/Qdrant 以及网页上传各自记录；目标中文语料质量仍需独立 benchmark |
-| Agent 与上下文 | PydanticAI 单 Agent、规划/反思、证据门禁、授权工具、受限历史与完整父块预算 | 复杂联合任务必须实际查 SQL 和知识并交齐结果；部分完成/兜底不算完整业务通过 |
-| 模型/工具/技能 | 实际模型注册表、Ollama 禁云验证、云厂商协议、受控工具目录、继承技能管理 | 云厂商实际认证依赖凭据；MCP 审批/账号/数据政策与运行协议须形成完整闭环，不能仅展示配置 |
-| RSI 与自评 | 合成 train/holdout/regression、规则计分、失败聚类、候选制品、人工审核、灰度/回滚 | 私人对话不进入全局学习；无失败簇时不伪造候选，生产观察时长和真实样本不足不能宣称完成 |
-| 长期记忆 | 本人范围、结构化抽取、三层召回、冲突/版本、补偿队列、本人遗忘 | 真实本地模型+Qdrant 持久化脚本与网页本人控制分别验收；短期测试不证明长期留存时长 |
-| 工程与开源 | 模块化代码、Ruff/Pytest、WebUI 补丁重建/Svelte 编译、依赖锁与已知漏洞审计 | 不提交运行数据/凭据；保留上游许可/品牌；Python 审计不扩称 JS、二进制或模型权重全安全 |
+## 验证范围
 
-## 启动与维护入口
+发布门禁运行核心、摄入、检索、可选搜索服务回归，检查文档链接、版本、补丁重放和前端构建，并审计五套 Python 锁和完整 npm 锁。Windows 文件链接边界须在 CI 中实际通过。真实模型、PostgreSQL 和网页业务流程的历史证据分别保存在 [逐项验收](acceptance/full-functional-acceptance.md) 与 [前端验收](frontend-acceptance.md)。
 
-- 用户运行：`start.cmd`；默认打开本机网页。无容器部署步骤。
-- 项目检查：`scripts/check-code.ps1`；可选 WebUI 与摄入/检索专项。
-- 真模型集成：`scripts/verify_rag_native.py`、`scripts/verify_memory_native.py`、`scripts/verify_agent_lifecycle.py`；使用独立合成数据并明确证据边界。
-- 依赖检查：`scripts/audit-dependencies.ps1`；结果按环境与日期记录。
-- WebUI 改动：更新生成的 `webui/` 后必须同步 `patches/open-webui/v0.11.4/nexrag/workspace.diff`，验证三补丁从固定提交可重建。
+当前 npm 仍有可选浏览器朗读链的已审核高危公告，具体边界和补丁版本见 [安全记录](acceptance/security-audit.md)。复杂自然语言回答的正确率、目标语料检索质量和真实长期灰度收益仍需独立评测。
 
-## 历史里程碑说明
+## 维护入口
 
-早期 v0.1–v0.2 采用过多进程编排基座和外部解析服务，曾以几十项测试及示例演示记录进展。这些属于当时快照，不能作为当前交付的完整验收，也不再代表现行启动方案。旧编排/构建资产已移出交付；不操作用户机器上的历史镜像、进程或数据。
-
-此前“100%”“四源全部打通”等总体判断已被逐项证据标准替代。历史前端失败与纠正过程保留在验收文档，不因后续修复而删除。Git 标签与发布状态应以实际仓库记录为准，本计划不代替提交或发布证据。
+- `scripts/check-code.ps1 -IncludeWebUI -IncludeRagServices` 检查代码、锁文件、补丁与服务回归。
+- `scripts/audit-dependencies.ps1` 审计五套 Python 锁，`node scripts/audit-webui.mjs` 审计 npm 锁。
+- `scripts/check-repository.py` 检查源码交付、项目文档链接和版本一致性。
+- `scripts/verify_source_delivery.py` 导出当前候选源码并检查已知本机凭据。
+- GitHub Release 使用标签对应的 CHANGELOG，须在全部 CI 门禁成功后发布源码 ZIP 与 SHA-256。

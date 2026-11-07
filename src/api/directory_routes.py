@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from src.api.ops_routes import require_admin
+from src.api.dependencies import require_admin
 from src.midplatform import directory
 from src.midplatform.tenant_access import Principal
 

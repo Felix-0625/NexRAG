@@ -34,16 +34,25 @@ def submit(gov, reg, *, kind="params", cluster="tool_failure:query_database", va
         candidate_id=candidate.id,
         baseline_id=baseline.id,
         evidence_count=6,
-        report={"what_changed": {}},
+        report={
+            "what_changed": {},
+            "effect": {
+                "baseline_versions": {
+                    kind: reg.production(kind).id for kind in ("prompt", "params")
+                }
+            },
+        },
         priority=1.0,
     ), candidate
 
 
 def test_same_cluster_merges_and_other_cluster_defers(gov, reg):
-    (first, action), _ = submit(gov, reg)
+    (first, action), previous_candidate = submit(gov, reg)
     assert action == "created"
     (merged, action), _ = submit(gov, reg, value=4)
     assert (merged, action) == (first, "merged")
+    with pytest.raises(GovernanceError, match="Proposal changed"):
+        gov.approve(first, "admin@example.local", expected_candidate_id=previous_candidate.id)
     (_, action), deferred = submit(gov, reg, cluster="timeout:-")
     assert action == "deferred" and reg.get(deferred.id).label == "rejected"
     assert len(gov.list("pending_review")) == 1
@@ -63,6 +72,28 @@ def test_baseline_change_marks_stale_and_blocks_approval(gov, reg):
     with pytest.raises(GovernanceError, match="stale"):
         gov.approve(proposal_id, "admin@example.local")
     assert gov.get(proposal_id)["status"] == "stale"
+
+
+@pytest.mark.parametrize("effect", [None, {"baseline_versions": {}}])
+def test_legacy_report_requires_fresh_evaluation(gov, reg, isolated_ops, effect):
+    import json
+
+    (proposal_id, _), _ = submit(gov, reg)
+    report = {} if effect is None else {"effect": effect}
+    isolated_ops.execute(
+        "UPDATE proposals SET report = ? WHERE id = ?", (json.dumps(report), proposal_id)
+    )
+    with pytest.raises(GovernanceError, match="refreshed"):
+        gov.approve(proposal_id, "admin@example.local")
+    assert gov.get(proposal_id)["status"] == "stale"
+
+
+def test_other_artifact_change_invalidates_evaluation(gov, reg):
+    (proposal_id, _), _ = submit(gov, reg)
+    newer = reg.create("prompt", "Updated production guidance")
+    reg.set_label(newer.id, "production")
+    with pytest.raises(GovernanceError, match="refreshed"):
+        gov.approve(proposal_id, "admin@example.local")
 
 
 def test_ttl_expiry(gov, reg, isolated_ops, monkeypatch):
@@ -122,6 +153,32 @@ def test_canary_routing_is_stable_per_user(reg, monkeypatch):
     assert resolve(canary_users[0], reg).versions["params"] == staging.id
     assert resolve(next(u for u in users if not in_canary(u)), reg).canary is False
     assert resolve(canary_users[0], reg).versions == resolve(canary_users[0], reg).versions
+
+
+def test_rollback_of_old_proposal_keeps_new_production(gov, reg, isolated_ops):
+    (proposal_id, _), candidate = submit(gov, reg)
+    isolated_ops.execute("UPDATE proposals SET status = 'promoted' WHERE id = ?", (proposal_id,))
+    reg.set_label(candidate.id, "production")
+    newer = reg.create("params", {"prune_max_tables": 4}, parent_id=candidate.id)
+    reg.set_label(newer.id, "production")
+
+    with pytest.raises(GovernanceError, match="current production"):
+        gov.rollback(proposal_id, "stale browser tab")
+    assert reg.production("params").id == newer.id
+    assert gov.get(proposal_id)["status"] == "promoted"
+
+
+def test_approval_rolls_back_if_staging_label_fails(gov, reg, monkeypatch):
+    (proposal_id, _), _ = submit(gov, reg)
+
+    def fail(*_args):
+        raise ValueError("staging write failed")
+
+    monkeypatch.setattr(reg, "set_label", fail)
+    with pytest.raises(ValueError, match="staging write failed"):
+        gov.approve(proposal_id, "admin@example.local")
+    assert gov.get(proposal_id)["status"] == "pending_review"
+    assert reg.by_label("params", "staging") is None
 
 
 def test_canary_cannot_promote_with_no_real_samples_or_forged_summary(gov, reg, isolated_ops):

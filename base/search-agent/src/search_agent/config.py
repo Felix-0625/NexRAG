@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     llm_strict_tools: bool = True
 
     datetime_timezone: str = "UTC"
-    datetime_format: str = "%A, %B %-d, %Y, %H:%M %Z"
+    datetime_format: str = "%A, %B %d, %Y, %H:%M %Z"
 
     # Search agent prompts
     search_query_planner_prompt: str = (

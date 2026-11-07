@@ -2,7 +2,6 @@ import asyncio
 import ipaddress
 import logging
 import socket
-from urllib.parse import urlparse
 
 import httpx
 import trafilatura
@@ -18,28 +17,21 @@ _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _MAX_REDIRECTS = 5
 
 
-async def _host_is_public(host: str) -> bool:
-    """Return True only if every resolved address for host is globally routable.
-
-    Why ``is_global`` and not a denylist: ``is_global`` is the inverse of
-    every reserved range (private, loopback, link-local, multicast, reserved,
-    unspecified, …) so we don't have to remember to extend the list when a
-    new range is reserved. Notably this catches ``0.0.0.0`` / ``::`` (which
-    fall back to loopback when connected to) and ``240.0.0.0/4``.
-    """
+async def _public_ip(host: str, timeout: float) -> str | None:
+    """Resolve once and select an address only if all answers are public unicast."""
     try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, host, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        return False
-    for info in infos:
-        addr = info[4][0]
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            return False
-        if not ip.is_global:
-            return False
-    return bool(infos)
+        async with asyncio.timeout(timeout):
+            infos = await asyncio.get_running_loop().getaddrinfo(
+                host, None, type=socket.SOCK_STREAM
+            )
+        addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+    except (socket.gaierror, TimeoutError, ValueError):
+        return None
+    if not addresses or any(
+        not ip.is_global or ip.is_multicast or ip.is_reserved for ip in addresses
+    ):
+        return None
+    return str(min(addresses, key=lambda ip: ip.version))
 
 
 async def _fetch_one(
@@ -55,7 +47,7 @@ async def _fetch_one(
     (invalid URL, SSRF block, HTTP error, empty extract) for the shorter
     `cache_fetch_negative_ttl` so transient failures recover quickly.
     """
-    cache_key = cache.make_key("fetch", url, max_chars)
+    cache_key = cache.make_key("fetch-public-ip", url, max_chars)
     cached = await cache.get_json(cache_key)
     if cached is not None:
         logger.debug("fetch cache hit url=%s ok=%s", url, cached.get("ok"))
@@ -98,40 +90,41 @@ async def _fetch_with_validated_redirects(
     timeout: float,
     max_bytes: int,
 ) -> str | None:
-    """Fetch a URL, manually following redirects and re-validating each hop.
-
-    Why: httpx's ``follow_redirects=True`` blindly chases 3xx responses, so a
-    public URL that redirects to an internal address (cloud metadata, Redis,
-    Traefik dashboard, etc.) bypasses a one-shot SSRF check. We disable auto
-    redirect and re-run the public-host check on every hop.
-
-    A narrow DNS rebinding window remains between each hop's resolve and
-    httpx's connect — closing it fully requires connecting by pinned IP,
-    which is incompatible with HTTPS certificate verification absent a
-    custom transport.
-    """
+    """Validate each redirect and connect to the exact checked address."""
     current = url
     for _ in range(_MAX_REDIRECTS + 1):
         if not is_valid_url(current):
             return None
-        host = urlparse(current).hostname
-        if not host or not await _host_is_public(host):
-            logger.debug("Fetch blocked (non-public host): %s", current)
-            return None
         try:
-            async with client.stream(
-                "GET", current, timeout=timeout, follow_redirects=False
-            ) as response:
+            target = httpx.URL(current)
+            if not target.host or target.userinfo:
+                return None
+            host = target.raw_host.decode("ascii")
+            address = await _public_ip(host, timeout)
+            if address is None:
+                logger.debug("Fetch blocked (non-public host): %s", host)
+                return None
+            # Keep the original HTTP authority and TLS certificate identity when dialing the IP.
+            request = httpx.Request(
+                "GET",
+                target.copy_with(host=address),
+                headers={"Host": target.netloc.decode("ascii"), "Accept-Encoding": "identity"},
+                extensions={"sni_hostname": host, "timeout": httpx.Timeout(timeout).as_dict()},
+            )
+            response = await client.send(request, stream=True, follow_redirects=False)
+            try:
                 if response.status_code in _REDIRECT_STATUSES:
                     location = response.headers.get("location")
                     if not location:
                         return None
-                    current = str(httpx.URL(current).join(location))
+                    current = str(target.join(location))
                     continue
                 if response.status_code >= 400:
                     return None
                 content_type = response.headers.get("content-type", "").lower()
                 if not content_type.startswith("text/html"):
+                    return None
+                if response.headers.get("content-encoding", "identity").lower() != "identity":
                     return None
 
                 chunks: list[bytes] = []
@@ -143,7 +136,9 @@ async def _fetch_with_validated_redirects(
                         return None
                     chunks.append(chunk)
                 return b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
-        except (httpx.HTTPError, UnicodeDecodeError):
+            finally:
+                await response.aclose()
+        except (httpx.HTTPError, httpx.InvalidURL, UnicodeDecodeError):
             logger.debug("Fetch failed: %s", current, exc_info=True)
             return None
     logger.debug("Fetch aborted (max redirects exceeded): %s", url)
@@ -151,7 +146,6 @@ async def _fetch_with_validated_redirects(
 
 
 async def fetch_pages(
-    client: httpx.AsyncClient,
     results: list[RawSearchResult],
     max_pages: int,
     timeout: float,
@@ -171,9 +165,13 @@ async def fetch_pages(
     targets = [r for r in results if not r.content][:max_pages]
     if not targets:
         return results
-    extracted = await asyncio.gather(
-        *(_fetch_one(client, r.url, timeout, max_chars, max_bytes) for r in targets)
-    )
+    # Public fetches never use the provider's session or an environment proxy.
+    # Connections are not pooled across hostnames that resolve to the same IP.
+    limits = httpx.Limits(max_connections=20, max_keepalive_connections=0)
+    async with httpx.AsyncClient(trust_env=False, limits=limits) as client:
+        extracted = await asyncio.gather(
+            *(_fetch_one(client, r.url, timeout, max_chars, max_bytes) for r in targets)
+        )
     for result, text in zip(targets, extracted, strict=True):
         result.content = text
 

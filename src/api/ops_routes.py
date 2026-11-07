@@ -1,7 +1,6 @@
-"""仅限管理员的运维 API：trace、数据集、实验、提案。
+"""运维 API：运行记录、评测、提案和用户反馈。
 
-所有接口都要求共享服务密钥、经签名的 Open WebUI 身份以及 role=admin。
-trace 只保存脱敏内容和哈希后的用户 ID。
+管理操作要求签名身份和管理员角色；反馈仅允许回答所属用户提交。
 """
 
 from __future__ import annotations
@@ -9,34 +8,26 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from src.api.dependencies import require_admin
 from src.evaluation import datasets
 from src.evolution.artifacts import registry
 from src.evolution.cycle import EvolutionCycle
 from src.evolution.governance import Governance, GovernanceError
-from src.midplatform import knowledge_library
-from src.midplatform.ops_store import get_ops_store
+from src.midplatform.ops_store import get_ops_store, now
 from src.midplatform.tenant_access import Principal, get_principal
 from src.observability.tracer import tracer
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
 
-def require_admin(principal: Principal = Depends(get_principal)) -> Principal:
-    """依赖项：要求已验证身份的角色为 admin，否则返回 403；通过则返回该身份。"""
-    if principal.role != "admin":
-        raise HTTPException(status_code=403, detail="Administrator role required")
-    return principal
-
-
 @router.get("/overview")
 def overview(days: float = Query(7, gt=0, le=90), _: Principal = Depends(require_admin)):
     """管理员查看最近若干天（最多 90）的运行概览：trace 总量与时延、评分均值、按日趋势、提案积压和线上产物版本。"""
     store = get_ops_store()
-    since = __import__("time").time() - days * 86_400
+    since = now() - days * 86_400
     totals = (
         store.query_one(
             "SELECT COUNT(*) AS traces, AVG(latency_ms) AS avg_latency, "
@@ -179,6 +170,7 @@ def get_proposal(proposal_id: str, _: Principal = Depends(require_admin)):
 
 class ReviewBody(BaseModel):
     note: str | None = Field(default=None, max_length=1_000)
+    candidate_id: str | None = Field(default=None, max_length=80)
 
 
 def _act(fn, *args, **kwargs):
@@ -191,8 +183,14 @@ def _act(fn, *args, **kwargs):
 
 @router.post("/proposals/{proposal_id}/approve")
 def approve(proposal_id: str, body: ReviewBody, admin: Principal = Depends(require_admin)):
-    """管理员批准提案，仅启动灰度而不直接上线；线上版本已变化则标记过期，状态不允许时返回 409。"""
-    return _act(Governance().approve, proposal_id, admin.email, body.note)
+    """管理员批准当前候选并启动灰度。候选被替换时提示重新查看。"""
+    return _act(
+        Governance().approve,
+        proposal_id,
+        admin.email,
+        body.note,
+        expected_candidate_id=body.candidate_id,
+    )
 
 
 @router.post("/proposals/{proposal_id}/reject")
@@ -234,112 +232,9 @@ def feedback(body: FeedbackBody, principal: Principal = Depends(get_principal)):
     from src.observability.redaction import hash_user
 
     store = get_ops_store()
-    trace = store.query_one("SELECT user_hash FROM traces WHERE id = ?", (body.trace_id,))
-    if not trace or trace["user_hash"] != hash_user(principal.user_id):
-        raise HTTPException(status_code=404, detail="Trace not found")
-    tracer.add_score(
-        body.trace_id,
-        "user_rating",
-        1.0 if body.rating > 0 else 0.0,
-        source="user",
-        comment=(body.comment or None),
-    )
-    return {"ok": True}
-
-
-@router.get("/knowledge")
-def list_knowledge_documents(_: Principal = Depends(require_admin)):
-    """列出 Agent 查询实际检索的共享知识库中的文件。"""
-    return {"data": knowledge_library.list_documents()}
-
-
-@router.post("/knowledge")
-async def upload_knowledge_document(file: UploadFile, admin: Principal = Depends(require_admin)):
-    """仅限管理员：上传文件到 Agent 的共享知识库。
-
-    用户在 Open WebUI 中的私有知识库相互独立；本接口只操作
-    Agent 的 search_knowledge_documents 工具实际查询的集合。
-    """
-    try:
-        return await knowledge_library.upload_document(
-            filename=file.filename or "document", content=await file.read(), uploaded_by=admin.email
-        )
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Ingestion service rejected the file: {exc}"
-        ) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-
-@router.delete("/knowledge/{file_id}")
-async def delete_knowledge_document(file_id: str, _: Principal = Depends(require_admin)):
-    """管理员从 Agent 共享知识库删除一个文件；摄取服务拒绝返回 502，服务不可用返回 503。"""
-    try:
-        return await knowledge_library.delete_document(file_id)
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Ingestion service rejected the request: {exc}"
-        ) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-
-class TenantBody(BaseModel):
-    tenant_id: str = Field(min_length=1, max_length=128)
-    label: str = Field(min_length=1, max_length=200)
-
-
-class GrantBody(BaseModel):
-    email: str = Field(min_length=3, max_length=320)
-    tenant_id: str = Field(min_length=1, max_length=128)
-
-
-@router.get("/tenants")
-def list_all_tenants(_: Principal = Depends(require_admin)):
-    """返回完整租户目录及每位用户当前的授权，供账户页使用。"""
-    from src.midplatform import tenant_access
-
-    return {"tenants": tenant_access.list_tenants(), "grants": tenant_access.list_grants()}
-
-
-@router.post("/tenants")
-def create_tenant(body: TenantBody, _: Principal = Depends(require_admin)):
-    """管理员新增一个业务租户；ID 已存在返回 409。"""
-    from src.midplatform import tenant_access
-
-    try:
-        tenant_access.create_tenant(body.tenant_id, body.label)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"ok": True}
-
-
-@router.delete("/tenants/{tenant_id}")
-def delete_tenant(tenant_id: str, _: Principal = Depends(require_admin)):
-    """管理员删除一个业务租户，并同时清除所有账号对它的授权。"""
-    from src.midplatform import tenant_access
-
-    tenant_access.delete_tenant(tenant_id)
-    return {"ok": True}
-
-
-@router.post("/tenants/grant")
-def grant_tenant(body: GrantBody, admin: Principal = Depends(require_admin)):
-    """管理员授予某邮箱访问指定业务租户的权限，并记录授权人；租户不存在返回 400。"""
-    from src.midplatform import tenant_access
-
-    try:
-        tenant_access.set_grant(body.email, body.tenant_id, True, admin.email)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True}
-
-
-@router.post("/tenants/revoke")
-def revoke_tenant(body: GrantBody, _: Principal = Depends(require_admin)):
-    """管理员撤销某邮箱对指定业务租户的访问权限。"""
-    from src.midplatform import tenant_access
-
-    tenant_access.set_grant(body.email, body.tenant_id, False, "")
+    with store.transaction(immediate=True):
+        trace = store.query_one("SELECT user_hash FROM traces WHERE id = ?", (body.trace_id,))
+        if not trace or trace["user_hash"] != hash_user(principal.user_id):
+            raise HTTPException(status_code=404, detail="Trace not found")
+        tracer.record_rating(body.trace_id, 1.0 if body.rating > 0 else 0.0, body.comment or None)
     return {"ok": True}

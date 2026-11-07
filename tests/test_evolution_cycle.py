@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 
 from src.config import settings
 from src.evaluation import datasets
 from src.evaluation.evaluators import RunOutcome
+from src.evaluation.synthetic import record_synthetic_failure
 from src.evolution.artifacts import ArtifactRegistry
 from src.evolution.cycle import EvolutionCycle
 from src.evolution.governance import Governance
+from src.evolution.miner import FailureCluster, mine_failures
+from src.evolution.proposer import cluster_evidence
 from src.midplatform.ops_store import dumps, new_id, now
 from src.observability.tracer import Tracer, TraceRecord
 
@@ -34,16 +38,16 @@ def seed_items(store):
 
 
 def seed_failures(store, n=6):
-    tracer = Tracer(store)
-    for _ in range(n):
-        trace = TraceRecord(new_id(), "u1", "t1", None, "how many orders")
-        tracer.record(
-            trace, output_text="", status="ok", rule_scores={"reflections": 1, "evidence_calls": 1}
+    for index in range(n):
+        datasets.add_synthetic_item(
+            f"Count the orders in synthetic case {index}",
+            "synthetic-a",
+            "train",
+            {"required_tools": ["query_database"]},
+            store=store,
         )
-        store.execute(
-            "INSERT INTO observations VALUES (?,?,?,?,?,?,?,?)",
-            (new_id(), trace.trace_id, "tool", "query_database", "", "", "reflection: 0 rows", 0),
-        )
+    for item in datasets.items(("train",), store):
+        record_synthetic_failure(item, RunOutcome("", synthetic_fixture=True), 0.0, store)
 
 
 def task_answers_with_more_tables(seen: list[str]):
@@ -98,7 +102,7 @@ def test_parameter_search_never_sees_holdout(isolated_ops, monkeypatch):
     asyncio.run(
         cycle._best_params(
             cycle.reg.production("params"),
-            __import__("src.evolution.miner", fromlist=["x"]).mine_failures(isolated_ops)[0],
+            mine_failures(isolated_ops)[0],
             datasets.items(("train",), isolated_ops),
             cycle.reg.production("prompt"),
         )
@@ -118,6 +122,33 @@ def test_small_clusters_do_not_trigger_changes(isolated_ops):
     assert report.actions == [{"action": "none", "detail": "no cluster reached the minimum size"}]
 
 
+def test_held_out_failures_stay_out_of_mining_and_prompt_evidence(isolated_ops):
+    outcome = RunOutcome("", synthetic_fixture=True)
+    legacy_trace_ids = []
+    for split in ("holdout", "regression"):
+        datasets.add_synthetic_item(
+            f"Independent {split} case",
+            "synthetic-a",
+            split,
+            {"answer_contains": ["42"]},
+            store=isolated_ops,
+        )
+        item = datasets.items((split,), isolated_ops)[0]
+        assert record_synthetic_failure(item, outcome, 0.0, isolated_ops) is None
+        # 复现旧版把独立验证失败写成共享 trace 后的数据库状态。
+        legacy_trace_ids.append(
+            record_synthetic_failure(replace(item, split="train"), outcome, 0.0, isolated_ops)
+        )
+    assert all(legacy_trace_ids)
+    assert mine_failures(isolated_ops) == []
+    assert (
+        cluster_evidence(
+            FailureCluster("legacy", "evaluation_failure", None, legacy_trace_ids), isolated_ops
+        )
+        == []
+    )
+
+
 def test_canary_auto_rollback_on_online_drop(isolated_ops):
     reg = ArtifactRegistry(isolated_ops)
     gov = Governance(isolated_ops, reg)
@@ -129,7 +160,9 @@ def test_canary_auto_rollback_on_online_drop(isolated_ops):
         candidate_id=cand.id,
         baseline_id=base.id,
         evidence_count=6,
-        report={},
+        report={
+            "effect": {"baseline_versions": {k: reg.production(k).id for k in ("prompt", "params")}}
+        },
         priority=1,
     )
     gov.approve(proposal_id, "admin@example.local")
@@ -163,7 +196,9 @@ def test_unrelated_version_traffic_does_not_count_as_canary_evidence(isolated_op
         candidate_id=candidate.id,
         baseline_id=base.id,
         evidence_count=5,
-        report={},
+        report={
+            "effect": {"baseline_versions": {k: reg.production(k).id for k in ("prompt", "params")}}
+        },
         priority=1,
     )
     gov.approve(key, "admin@example.local")

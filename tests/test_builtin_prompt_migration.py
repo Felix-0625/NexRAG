@@ -39,6 +39,41 @@ def test_active_canary_defers_baseline_migration(isolated_ops):
     assert len(reg.history("prompt")) == 2
 
 
+def test_concurrent_first_requests_share_one_production_version(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from src.midplatform.ops_store import OpsStore
+
+    first_reads = Barrier(2)
+    stores = [OpsStore(tmp_path / "ops.db") for _ in range(2)]
+
+    def initialize(store):
+        reg = ArtifactRegistry(store)
+        by_label = reg.by_label
+        initial = True
+
+        def synchronize_first_read(kind, label):
+            nonlocal initial
+            artifact = by_label(kind, label)
+            if initial:
+                initial = False
+                first_reads.wait(timeout=5)
+            return artifact
+
+        reg.by_label = synchronize_first_read
+        return reg.production("params").id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            versions = list(pool.map(initialize, stores))
+        assert len(set(versions)) == 1
+        assert len(ArtifactRegistry(stores[0]).history("params")) == 1
+    finally:
+        for store in stores:
+            store.close()
+
+
 @pytest.mark.parametrize("change", ["operator", "custom_content", "custom_note", "descendant"])
 def test_custom_guidance_is_never_silently_replaced(isolated_ops, change):
     reg = ArtifactRegistry(isolated_ops)
