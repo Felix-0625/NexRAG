@@ -34,6 +34,8 @@ class GovernanceError(ValueError):
 
 
 class Governance:
+    """管理提案的审核、灰度、晋升与回滚；状态转换与版本写入在同一事务完成。"""
+
     def __init__(self, store: OpsStore | None = None, reg: ArtifactRegistry | None = None):
         self._store = store
         self.reg = reg or ArtifactRegistry(store)

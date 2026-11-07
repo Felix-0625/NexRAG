@@ -95,6 +95,8 @@ def visible(record: MemoryRecord, scope: MemoryScope, at: float) -> bool:
 
 
 class MemoryService:
+    """按用户和租户作用域协调记忆提取、冲突裁决、持久化与召回。"""
+
     def __init__(
         self,
         ops: OpsStore,
@@ -110,7 +112,7 @@ class MemoryService:
         self.completer = completer
         self.adjudicator = adjudicator
 
-    # ------------------------------------------------------------------ write
+    # ------------------------------------------------------------------ 写入
     def _normalise_scope(
         self, candidate: MemoryCandidate, scope: MemoryScope
     ) -> MemoryCandidate | None:
@@ -304,7 +306,7 @@ class MemoryService:
                 results.append(result)
         return results
 
-    # ----------------------------------------------------------------- recall
+    # ------------------------------------------------------------------ 召回
     async def recall(
         self, query: str, scope: MemoryScope, *, top_k: int | None = None, at: float | None = None
     ) -> list[RecalledMemory]:

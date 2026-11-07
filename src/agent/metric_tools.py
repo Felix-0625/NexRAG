@@ -14,6 +14,8 @@ from src.midplatform.metric_query import MetricFilter, execute_metric_group, met
 
 
 def register_metric_tools(agent):
+    """注册按目录 ID 查询的指标工具，统一复用当前授权与业务快照。"""
+
     @agent.tool(strict=False)
     async def query_business_metrics(
         ctx: RunContext[AgentDeps], metric_ids: list[str], filters: list[MetricFilter] | None = None

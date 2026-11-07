@@ -18,8 +18,10 @@
 
 ## 维护入口
 
+测试、示例和评测材料分别见 [测试导航](../tests/README.md)、[演示配置](../examples/README.md)、[评测材料](../evals/README.md)。2026-11-07 的仓库复核补齐了导航、实例无关的评测命令与关键维护注释；超千行的摄入测试按工厂与分块行为拆分，原测试断言保留。维护的交付代码均不超过 1,000 行，生成的上游 WebUI 含大文件，继续通过补丁维护。历史敏感信息扫描及其局限见 [安全记录](acceptance/security-audit.md)。
+
 - `scripts/check-code.ps1 -IncludeWebUI -IncludeRagServices` 检查代码、锁文件、补丁与服务回归。
 - `scripts/audit-dependencies.ps1` 审计五套 Python 锁，`node scripts/audit-webui.mjs` 审计 npm 锁。
-- `scripts/check-repository.py` 检查源码交付、项目文档链接和版本一致性。
+- `scripts/check-repository.py` 检查源码交付、代码文件 1,000 行上限、项目文档链接和版本一致性。
 - `scripts/verify_source_delivery.py` 导出当前候选源码并检查已知本机凭据。
 - GitHub Release 使用标签对应的 CHANGELOG，须在全部 CI 门禁成功后发布源码 ZIP 与 SHA-256。

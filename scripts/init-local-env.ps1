@@ -1,5 +1,5 @@
-# Create an ignored local environment file with independent service secrets.
-# Existing .env files are never overwritten or printed.
+# 创建被 Git 忽略的本机环境文件，各服务使用独立密钥。
+# 已有 .env 文件不覆盖，也不输出其内容。
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot

@@ -5,7 +5,7 @@ retrieval service. It does not implement its own ranking metric. It sends one
 batch of ten queries through the configured Dense/BM42/RRF/BGE/Parent pipeline.
 It neither invokes a cloud judge nor uploads results to an evaluation platform.
 
-The 2026-11-02 fixture is stored in `D:/NexRAG-Acceptance/finqa`. Its manifest
+The adapter prepares a fixed fixture under `.local-run/acceptance/finqa`. Its manifest
 records the official [FinQA](https://github.com/czyssrs/FinQA) test split at commit
 `0f16e2867befa6840783e58be38c9efb9229d742`, SHA256 and the first ten unique source
 report filenames in published order. Selection and the 0.9 minimum document
@@ -18,8 +18,9 @@ remain unchanged:
 ```powershell
 uv venv --python 3.12 .local-run/acceptance/ragas-venv
 uv pip install --python .local-run/acceptance/ragas-venv/Scripts/python.exe ragas==0.4.3 langchain-community==0.3.31
-.local-run/acceptance/ragas-venv/Scripts/python.exe evals/finqa/prepare.py D:/NexRAG-Acceptance/finqa
-.local-run/acceptance/ragas-venv/Scripts/python.exe evals/finqa/retrieval.py --fixtures D:/NexRAG-Acceptance/finqa --library a7185438-4496-41a7-a873-f5765c35425b
+.local-run/acceptance/ragas-venv/Scripts/python.exe evals/finqa/prepare.py .local-run/acceptance/finqa
+# Replace the placeholder with the ID of your dedicated library after uploading the corpus.
+.local-run/acceptance/ragas-venv/Scripts/python.exe evals/finqa/retrieval.py --fixtures .local-run/acceptance/finqa --library '<your-library-id>'
 ```
 
 Use a dedicated library containing only the ten public report files. The service

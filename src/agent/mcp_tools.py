@@ -79,6 +79,7 @@ def explicit_tool_refusal(prompt, policy):
 
 
 def approved_tools(deps):
+    """按当前策略构建最多 30 个工具；执行时仍校验审批版本，防止撤权后复用。"""
     policy = current_policy(deps.context)
     if not policy.external_tools or policy.classification == "secret":
         return []

@@ -1,4 +1,4 @@
-"""核对交付文件、项目文档链接和发布版本的一致性。"""
+"""核对交付文件、代码体量、项目文档链接和发布版本的一致性。"""
 
 from __future__ import annotations
 
@@ -11,10 +11,11 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+CODE_SUFFIXES = {".py", ".js", ".ts", ".svelte", ".ps1", ".cjs", ".mjs", ".cmd"}
 
 
 def check_repository() -> str:
-    """拒绝运行文件和失效的项目文档链接，返回项目版本。"""
+    """拒绝运行文件、超大代码文件和失效的项目文档链接，返回项目版本。"""
     paths = (
         subprocess.check_output(
             ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=ROOT
@@ -42,10 +43,15 @@ def check_repository() -> str:
                 }
                 for part in parts
             )
+            or (path.name.startswith(".env") and path.name != ".env.example")
             or path.suffix.lower() in {".db", ".sqlite", ".sqlite3", ".pyc", ".pem", ".key", ".log"}
             or (parts[0] == "data" and path.name != ".gitkeep")
         ):
             errors.append(f"Runtime or credential file in delivery: {name}")
+        if path.suffix.lower() in CODE_SUFFIXES:
+            line_count = len(path.read_text(encoding="utf-8-sig").splitlines())
+            if line_count > 1000:
+                errors.append(f"Code file exceeds 1000 lines ({line_count}): {name}")
         if path.suffix != ".md" or parts[0] == "base":
             continue
         for target in re.findall(

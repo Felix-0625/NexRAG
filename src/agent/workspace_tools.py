@@ -127,6 +127,7 @@ def _bridge_tools(deps: AgentDeps) -> list[Tool]:
 
 
 def build_workspace_toolset(deps: AgentDeps) -> FunctionToolset:
+    """按本轮业务需求、现行授权和桥接票据组装工具，不缓存跨账号工具集。"""
     from src.agent.mcp_tools import approved_tools
 
     functions = approved_tools(deps)

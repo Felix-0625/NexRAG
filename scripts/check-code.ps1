@@ -1,4 +1,4 @@
-# Run the same core gates as CI, using this checkout's installed dependencies.
+# 使用当前检出安装的依赖，执行与 CI 相同的核心门禁。
 param([switch]$IncludeWebUI, [switch]$IncludeRagServices)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -18,8 +18,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Repository or documentation check failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Ruff lint failed.' }
 & $pythonExe -m ruff format --check src scripts tests
 if ($LASTEXITCODE -ne 0) { throw 'Ruff format check failed.' }
-# Privacy tests execute the actual patched WebUI functions. Verify the generated
-# checkout first, so a missing checkout cannot silently weaken the test suite.
+# 隐私测试直接执行补丁后的 WebUI 函数；先验证生成检出，避免源码缺失削弱测试范围。
 & (Join-Path $PSScriptRoot 'prepare-webui.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Pinned WebUI patch preparation failed.' }
 & $pythonExe -m pytest tests -q

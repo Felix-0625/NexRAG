@@ -1,4 +1,4 @@
-# Audit pinned runtime and development dependencies. No application/user content is sent.
+# 审计锁定的运行和开发依赖，只发送依赖信息，不发送应用或用户内容。
 param([ValidateSet('all', 'core', 'ingestion', 'retrieval', 'search', 'webui')][string]$Scope = 'all')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot

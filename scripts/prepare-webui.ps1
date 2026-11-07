@@ -1,5 +1,5 @@
-# Prepare the pinned Open WebUI source checkout used by NexRAG.
-# The checkout is generated locally; project changes belong in tracked patch files.
+# 准备 NexRAG 使用的固定版本 Open WebUI 源码。
+# 检出由本机生成；项目修改应同步到受 Git 跟踪的补丁文件。
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -24,14 +24,12 @@ function Move-VerifiedWebUISource([string]$repository) {
         -or ((Get-Item -LiteralPath $sourceAbsolute -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
         throw 'Refusing to move a checkout outside the intended workspace.'
     }
-    # Directory.Move refuses an existing destination instead of merging or
-    # overwriting another process's/user's files.
+    # Directory.Move 拒绝已存在的目标，避免合并或覆盖其他进程、用户的文件。
     [System.IO.Directory]::Move($sourceAbsolute, $targetAbsolute)
 }
 
 function Initialize-WebUISource {
-    # Clone into a same-volume staging directory. A failed/interrupted download
-    # must not turn webui/ into a broken checkout that blocks the next start.
+    # 先克隆到同卷临时目录，避免下载中断留下损坏的 webui/，阻塞下次启动。
     $bootstrapRoot = Join-Path $projectRoot '.local-run/webui-bootstrap'
     New-Item -ItemType Directory -Force -Path $bootstrapRoot | Out-Null
     $unfinished = @(Get-ChildItem -LiteralPath $bootstrapRoot -Directory | Where-Object {
@@ -42,8 +40,7 @@ function Initialize-WebUISource {
             return $attempt.owner -eq 'nexrag-webui-bootstrap-v1' -and $attempt.status -ne 'completed'
         } catch { return $false }
     })
-    # An interruption can happen after download succeeds but before the atomic
-    # move. Recover only our own, pristine, exact-pinned staging checkout.
+    # 下载成功与原子移动之间也可能中断；只恢复本脚本创建、无修改且匹配固定版本的检出。
     foreach ($previous in $unfinished) {
         $previousRepository = Join-Path $previous.FullName 'repository'
         if (-not (Test-Path -LiteralPath (Join-Path $previousRepository '.git'))) { continue }
@@ -79,17 +76,15 @@ function Initialize-WebUISource {
     $metadata | ConvertTo-Json | Set-Content -LiteralPath $metadataPath -Encoding UTF8
     $clone = $null
     try {
-        # These options affect this public clone only, never the user's global
-        # Git/proxy/TLS configuration. A stalled transfer aborts after 120s;
-        # the total Git process deadline is eight minutes.
+        # 选项只影响本次公开克隆，不修改全局 Git、代理或 TLS 配置。
+        # 无进展传输在 120 秒后退出，Git 进程总时限为八分钟。
         $arguments = @('-c', 'http.lowSpeedLimit=1024', '-c', 'http.lowSpeedTime=120',
                        'clone', '--depth', '1', '--branch', $upstreamTag, '--', $upstreamUrl,
                        ('"{0}"' -f $repository))
         $clone = Start-Process -FilePath (Get-Command git).Source -ArgumentList $arguments `
             -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $attemptRoot 'git.stdout.log') `
             -RedirectStandardError (Join-Path $attemptRoot 'git.stderr.log')
-        # Windows PowerShell 5 can lose ExitCode after WaitForExit unless its
-        # process handle is retained before waiting. Do not treat null as zero.
+        # Windows PowerShell 5 要在等待前保留进程句柄，否则可能丢失 ExitCode；空值不能当作零。
         $null = $clone.Handle
         $metadata.status = 'downloading'
         $metadata.process_id = $clone.Id
@@ -98,8 +93,7 @@ function Initialize-WebUISource {
         $lastProgress = 0
         while (-not $clone.WaitForExit(1000)) {
             if ($timer.Elapsed.TotalSeconds -ge 480) {
-                # Only the Git process created immediately above and its own
-                # children belong to this timeout. Unrelated processes survive.
+                # 超时只清理本次创建的 Git 进程及其子进程，不影响其他进程。
                 & taskkill.exe /PID $clone.Id /T /F | Out-Null
                 $clone.WaitForExit()
                 throw "WebUI source download exceeded eight minutes. Check the network and retry. Details retained at $attemptRoot"
@@ -149,9 +143,8 @@ if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $upstreamCommit) {
     throw "Expected Open WebUI commit $upstreamCommit; found $actualCommit"
 }
 
-# Later patches can change context used by an earlier patch's reverse probe.
-# Build the expected final index separately and compare normalized text,
-# so a fully prepared checkout remains idempotent without reverting local work.
+# 后续补丁可能修改前序补丁反向探测所用的上下文。
+# 单独构造预期最终索引并比较规范化文本，保证重复准备幂等，保留本地修改。
 $tempIndex = Join-Path ([System.IO.Path]::GetTempPath()) ('nexrag-webui-index-' + [guid]::NewGuid())
 $previousIndex = $env:GIT_INDEX_FILE
 try {
@@ -181,9 +174,8 @@ try {
     if (Test-Path -LiteralPath $tempIndex) { Remove-Item -LiteralPath $tempIndex }
 }
 
-# Updated patch chains cannot be applied on top of a previous generated tree.
-# Preserve that entire tree before rebuilding from the already verified pin;
-# never reset or clean a checkout that may contain a maintainer's local work.
+# 更新后的补丁链不能叠加到旧生成目录；保留整棵旧目录，再从已验证版本重建。
+# 检出可能含维护者的本地工作，不能直接 reset 或 clean。
 $localChanges = @(git -C $checkoutPath status --porcelain --untracked-files=normal)
 if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the generated WebUI checkout.' }
 if ($localChanges.Count -gt 0) {
@@ -206,8 +198,7 @@ if ($localChanges.Count -gt 0) {
     if ($LASTEXITCODE -ne 0) { throw 'Could not set replacement upstream; original is unchanged.' }
     [System.IO.Directory]::Move($sourceAbsolute, $previousSource)
     Move-VerifiedWebUISource $replacementSource
-    # Reuse only the generated dependency cache; all source edits remain in
-    # previous/. The existing dependency fingerprint is checked by the launcher.
+    # 仅复用生成的依赖缓存；源码修改保留在 previous/，依赖指纹由启动器核对。
     $oldModules = Join-Path $previousSource 'node_modules'
     $newModules = Join-Path $checkoutPath 'node_modules'
     if ((Test-Path -LiteralPath $oldModules -PathType Container) `
@@ -222,8 +213,8 @@ foreach ($patch in $patches) {
         throw "Required patch is missing: $patch"
     }
 
-    # PowerShell 5.1 treats Git's expected stderr on a failed probe as an
-    # error record. Probe with Continue, then decide from Git's exit code.
+    # PowerShell 5.1 会把探测失败时预期的 Git stderr 当作错误记录。
+    # 探测期间使用 Continue，再按 Git 退出码判断。
     $ErrorActionPreference = 'Continue'
     git -C $checkoutPath apply --reverse --check --ignore-whitespace $patch 2>$null
     $alreadyApplied = $LASTEXITCODE -eq 0

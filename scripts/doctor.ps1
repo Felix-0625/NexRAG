@@ -1,4 +1,4 @@
-# Diagnostic tool for inspecting NexRAG environment, dependencies, services, and assets.
+# 检查 NexRAG 的环境、依赖、服务与本地资源。
 $ErrorActionPreference = 'Continue'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -32,7 +32,7 @@ function Report-Fail($msg, $fix = "") {
     }
 }
 
-# 1. Check Python and Virtual Environment
+# 1. 检查 Python 和虚拟环境。
 Write-Host "1. Checking Python Environment..." -ForegroundColor White
 $pythonExe = Join-Path $projectRoot '.venv\Scripts\python.exe'
 if (Test-Path $pythonExe) {
@@ -43,7 +43,7 @@ if (Test-Path $pythonExe) {
     $pythonExe = 'python'
 }
 
-# 2. Check Configuration & Secrets
+# 2. 检查配置与密钥是否就绪，不输出密钥。
 Write-Host "`n2. Checking Local Environment Files and Secrets..." -ForegroundColor White
 $envPath = Join-Path $projectRoot '.env'
 if (Test-Path $envPath) {
@@ -66,7 +66,7 @@ if (Test-Path $envPath) {
     Report-Fail "Missing .env file" "Run 'powershell -File scripts/init-local-env.ps1' to create it"
 }
 
-# 3. Check Data Assets
+# 3. 检查数据资源。
 Write-Host "`n3. Checking Data Assets and Business Configuration..." -ForegroundColor White
 $dbPath = Join-Path $projectRoot 'data\sqlite\business.db'
 if (Test-Path $dbPath) {
@@ -90,7 +90,7 @@ foreach ($cfg in $yamlConfigs) {
     }
 }
 
-# 4. Check External Services and Ports
+# 4. 检查外部服务与端口。
 Write-Host "`n4. Checking Microservices and Ports..." -ForegroundColor White
 
 $runtimePath = Join-Path $projectRoot '.local-run/runtime.json'
@@ -151,7 +151,7 @@ Test-PortConnection (Get-ServicePort 'retrieval' 8002) "Retrieval Service" "Run 
 Test-PortConnection (Get-ServicePort 'nexrag' 8000) "NexRAG Backend" "Run '.\start.cmd'" | Out-Null
 Test-PortConnection (Get-ServicePort 'web' 3000) "Open WebUI Frontend" "Run '.\start.cmd'" | Out-Null
 
-# Summary
+# 汇总诊断结果。
 Write-Host "`n----------------------------------------------------------" -ForegroundColor Cyan
 if ($issues -eq 0 -and $warnings -eq 0) {
     Write-Host "Diagnostic Complete: Everything is in optimal condition!" -ForegroundColor Green

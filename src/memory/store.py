@@ -47,6 +47,8 @@ def embedding_text(record_or_candidate: Any) -> str:
 
 
 class MemoryStore:
+    """封装记忆元数据与向量索引访问；读取和删除均显式约束用户。"""
+
     def __init__(self, ops: OpsStore, index: VectorIndex, collection: str):
         self.ops = ops
         self.index = index
