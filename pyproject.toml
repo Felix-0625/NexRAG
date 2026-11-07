@@ -12,7 +12,7 @@ dependencies = [
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
     # 2.60 修复 Anthropic 2.x 消息参数的联合类型兼容问题（上游 #11077）。
-    "pydantic-ai-slim[openai,anthropic,google]>=2.60.0,<3.0",
+    "pydantic-ai-slim[openai,anthropic,google]>=2.66.0,<3.0",
     "cryptography>=44.0",
     "qdrant-client>=1.12.0",
     "sqlglot>=26.0.0",
