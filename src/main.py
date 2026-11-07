@@ -17,7 +17,7 @@ from src.config import settings
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="NexRAG local agentic RAG backend service.",
-    version="0.1.0",
+    version="1.0.0",
 )
 
 # Open WebUI 后端以服务端到服务端方式调用 NexRAG（Authorization 头，无 cookie），
