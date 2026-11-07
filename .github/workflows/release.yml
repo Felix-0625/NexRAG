@@ -11,6 +11,7 @@ permissions:
 jobs:
   gate:
     name: Release gates
+    if: github.event.deleted == false
     uses: ./.github/workflows/ci.yml
 
   release:
