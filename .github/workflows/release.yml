@@ -1,59 +1,47 @@
 name: Release
 
-# 推送 v* 标签时触发：先过核心门禁，再据 CHANGELOG 对应段落建 GitHub Release。
 on:
   push:
     tags:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   gate:
-    name: Core gates
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-      - run: uv lock --check
-      - run: uv sync --frozen --group dev --python 3.12
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - name: Prepare pinned WebUI source and verify patch chain
-        shell: pwsh
-        run: ./scripts/prepare-webui.ps1
-      - run: uv run pytest tests -q
+    name: Release gates
+    uses: ./.github/workflows/ci.yml
 
   release:
     name: Publish GitHub Release
     needs: gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Extract this version's CHANGELOG section
-        id: notes
-        shell: bash
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate the tag and extract release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python scripts/check-repository.py --release-tag "$RELEASE_TAG" --notes-out release-notes.md
+      - name: Create the source archive and checksum
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          # 取 "## [<tag>]" 与下一个 "## [" 之间的内容作为发布说明。
-          # 用 index() 做字面前缀匹配，避开不同 awk 对方括号正则的转义差异。
-          awk -v hdr="## [$tag]" '
-            index($0, hdr) == 1 {grab=1; next}
-            grab && index($0, "## [") == 1 {exit}
-            grab {print}
-          ' CHANGELOG.md > release-notes.md
-          if [ ! -s release-notes.md ]; then
-            echo "CHANGELOG.md has no section for $tag" >&2
-            exit 1
-          fi
-      - name: Create release
+          mkdir release
+          git archive --format=zip --prefix="NexRAG-$RELEASE_TAG/" -o "release/NexRAG-$RELEASE_TAG-source.zip" HEAD
+          cd release
+          sha256sum *.zip > SHA256SUMS.txt
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           name: NexRAG ${{ github.ref_name }}
           body_path: release-notes.md
-          draft: true
+          files: release/*
+          fail_on_unmatched_files: true
+          draft: false
           prerelease: false

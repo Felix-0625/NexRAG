@@ -77,13 +77,6 @@ CREATE TABLE IF NOT EXISTS vector_outbox (
     id TEXT PRIMARY KEY, collection TEXT NOT NULL, point_id TEXT NOT NULL,
     action TEXT NOT NULL, created_at REAL NOT NULL
 );
--- Admin-maintained shared knowledge base. NexRAG has no direct Qdrant read
--- path for this collection, so this table is the only inventory of what is
--- in it; file_id must match what the ingestion service indexed chunks under.
-CREATE TABLE IF NOT EXISTS knowledge_documents (
-    file_id TEXT PRIMARY KEY, filename TEXT NOT NULL, collection_name TEXT NOT NULL,
-    chunks_count INTEGER NOT NULL, uploaded_by TEXT NOT NULL, created_at REAL NOT NULL
-);
 -- Admin-managed business tenant catalogue and per-user grants, replacing
 -- the deployer-maintained tenant-access.yaml as the live source of truth.
 -- The YAML file is only used once, to seed this table on first startup
@@ -137,14 +130,27 @@ class OpsStore:
         self._conn.executescript(SCHEMA)
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
-        """原子地执行多条语句；出现任何异常即回滚。"""
+    def transaction(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+        """原子地执行多条语句。读后写用 immediate 提前取得 SQLite 写锁。"""
         with self._lock:
+            conn = self._conn
+            nested = conn.in_transaction
+            if nested:
+                conn.execute("SAVEPOINT ops_nested")
+            elif immediate:
+                conn.execute("BEGIN IMMEDIATE")
             try:
-                yield self._conn
-                self._conn.commit()
-            except Exception:
-                self._conn.rollback()
+                yield conn
+                if nested:
+                    conn.execute("RELEASE ops_nested")
+                else:
+                    conn.commit()
+            except BaseException:
+                if nested:
+                    conn.execute("ROLLBACK TO ops_nested")
+                    conn.execute("RELEASE ops_nested")
+                else:
+                    conn.rollback()
                 raise
 
     def execute(self, sql: str, params: tuple | dict = ()) -> None:

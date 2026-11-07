@@ -43,8 +43,8 @@ SECRET_NAMES = (
     "INGESTION_API_KEY",
     "RETRIEVAL_API_KEY",
 )
-NODE_VERSION = "22.14.0"
-NODE_SHA256 = "55b639295920b219bb2acbcfa00f90393a2789095b7323f79475c9f34795f217"
+NODE_VERSION = "22.23.4"
+NODE_SHA256 = "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20"
 
 
 def say(message: str) -> None:
@@ -131,11 +131,15 @@ def github_zip(repository: str, version: str, asset_name: str, folder: Path) -> 
 
 
 def prepare_node() -> Path:
-    """优先使用 PATH 中主版本为 20 到 22 的 node；否则下载经 SHA256 校验的固定版本到 .local-run/tools，返回可执行文件路径。"""
+    """使用达到安全基线的 Node 22，或下载经 SHA256 校验的固定版本。"""
     node = shutil.which("node")
     if node:
-        major = int(run([node, "--version"]).lstrip("v").split(".")[0])
-        if 20 <= major <= 22:
+        version = run([node, "--version"]).strip().lstrip("v").split(".")
+        if (
+            version[0] == "22"
+            and all(part.isdecimal() for part in version)
+            and tuple(map(int, version)) >= tuple(map(int, NODE_VERSION.split(".")))
+        ):
             return Path(node)
     folder = STATE / "tools" / f"node-v{NODE_VERSION}-win-x64"
     executable = folder / "node.exe"
@@ -217,7 +221,7 @@ def prepare_webui_python(uv: str, base: dict) -> Path:
 
 
 def prepare_frontend(node: Path, base: dict) -> None:
-    """依据 package-lock.json 的指纹运行 npm ci 安装前端依赖（跳过 Cypress 与 Playwright 浏览器下载），指纹未变则跳过。"""
+    """锁文件变化时重装前端依赖，安装阶段禁用包的生命周期脚本。"""
     project = ROOT / "webui"
     fingerprint = sha256(project / "package-lock.json")
     stamp = project / "node_modules/.nexrag-dependencies"
@@ -226,14 +230,13 @@ def prepare_frontend(node: Path, base: dict) -> None:
         env = dict(
             base,
             PATH=str(node.parent) + os.pathsep + base.get("PATH", ""),
-            CYPRESS_INSTALL_BINARY="0",
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1",
         )
         run(
             [
                 node,
                 node.parent / "node_modules/npm/bin/npm-cli.js",
                 "ci",
+                "--ignore-scripts",
                 "--no-audit",
                 "--no-fund",
             ],

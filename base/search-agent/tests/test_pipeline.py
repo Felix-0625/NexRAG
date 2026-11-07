@@ -443,7 +443,7 @@ class TestFetchIntegration:
         ]
         mock_search.return_value = raw
 
-        async def _fake_fetch(client, results, **kwargs):
+        async def _fake_fetch(results, **kwargs):
             results[0].content = "Extracted main body text from the page."
             return results
 
@@ -506,7 +506,7 @@ class TestFetchIntegration:
         ]
         mock_search.return_value = raw
 
-        async def _fake_fetch(client, results, **kwargs):
+        async def _fake_fetch(results, **kwargs):
             # Simulate every page failing — content stays None
             return results
 

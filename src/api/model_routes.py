@@ -5,7 +5,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic_ai import Agent, UsageLimits
 
-from src.api.ops_routes import require_admin
+from src.api.dependencies import require_admin
 from src.midplatform import agent_models
 from src.midplatform.tenant_access import Principal, get_principal
 

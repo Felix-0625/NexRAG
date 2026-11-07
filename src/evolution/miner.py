@@ -1,20 +1,12 @@
-"""从近期线上 trace 中挖掘失败，并归并为问题聚类。
-
-满足以下任一条件即视为失败：运行出错或超时、工具失败、Agent 需要反思重试、
-用户点踩。单次投诉不会触发任何改动：规模低于 ``EVOLUTION_MIN_CLUSTER_SIZE``
-的聚类只作为积压信号保留。用户反馈的权重随时间衰减，陈旧投诉会逐渐淡出而不是堆积。
-"""
+"""按失败原因和工具归并近期的合成训练样本。"""
 
 from __future__ import annotations
 
-import json
-import math
 from dataclasses import dataclass, field
 
 from src.config import settings
+from src.evaluation.synthetic import TRAIN_FAILURE_TRACES
 from src.midplatform.ops_store import OpsStore, get_ops_store, now
-
-FEEDBACK_HALF_LIFE_DAYS = 7.0
 
 
 @dataclass
@@ -30,24 +22,6 @@ class FailureCluster:
         return len(self.trace_ids)
 
 
-def _reason(
-    trace: dict, scores: dict[str, float], first_error_tool: str | None
-) -> tuple[str, str | None] | None:
-    if trace["status"] == "timeout":
-        return "timeout", None
-    if trace["status"] != "ok":
-        return "run_error", None
-    if scores.get("user_rating", 1.0) < 0.5:
-        return "user_downvote", first_error_tool
-    if first_error_tool:
-        return "tool_failure", first_error_tool
-    if scores.get("reflections", 0) > 0:
-        return "needed_reflection", None
-    if scores.get("evidence_calls", 1) == 0:
-        return "no_evidence", None
-    return None
-
-
 def mine_failures(
     store: OpsStore | None = None, *, window_days: float | None = None, at: float | None = None
 ) -> list[FailureCluster]:
@@ -55,33 +29,26 @@ def mine_failures(
     store = store or get_ops_store()
     at = at if at is not None else now()
     since = at - (window_days or settings.EVOLUTION_WINDOW_DAYS) * 86_400
-    traces = store.query("SELECT * FROM traces WHERE created_at >= ? ORDER BY created_at", (since,))
+    traces = store.query(
+        "SELECT t.id, item.id AS item_id, "
+        "(SELECT o.name FROM observations AS o WHERE o.trace_id = t.id "
+        "AND o.error IS NOT NULL ORDER BY o.position LIMIT 1) AS failing_tool "
+        + TRAIN_FAILURE_TRACES
+        + " AND t.created_at >= ? ORDER BY t.created_at DESC, t.id",
+        (since,),
+    )
     clusters: dict[str, FailureCluster] = {}
+    seen_items = set()
     for trace in traces:
-        if json.loads(trace["artifact_versions"]).get("content_scope") == "private":
+        if trace["item_id"] in seen_items:
             continue
-        scores = {
-            row["name"]: row["value"]
-            for row in store.query(
-                "SELECT name, value FROM scores WHERE trace_id = ?", (trace["id"],)
-            )
-        }
-        failing = store.query_one(
-            "SELECT name FROM observations WHERE trace_id = ? AND error IS NOT NULL ORDER BY position LIMIT 1",
-            (trace["id"],),
-        )
-        reason = _reason(trace, scores, failing["name"] if failing else None)
-        if reason is None:
-            continue
-        label, tool = reason
+        seen_items.add(trace["item_id"])
+        tool = trace["failing_tool"]
+        label = "tool_failure" if tool else "evaluation_failure"
         key = f"{label}:{tool or '-'}"
         cluster = clusters.setdefault(key, FailureCluster(key, label, tool))
         cluster.trace_ids.append(trace["id"])
-        age_days = max(at - trace["created_at"], 0) / 86_400
-        decay = (
-            math.pow(0.5, age_days / FEEDBACK_HALF_LIFE_DAYS) if label == "user_downvote" else 1.0
-        )
-        cluster.weight += decay
+        cluster.weight += 1
     return sorted(clusters.values(), key=lambda c: c.weight, reverse=True)
 
 

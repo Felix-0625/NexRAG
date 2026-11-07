@@ -149,21 +149,26 @@ async def run_experiment(
     per_item: dict[str, dict[str, float]] = {}
     for item in items:
         runs = []
+        worst_outcome = None
+        worst_quality = float("inf")
         for _ in range(max(1, repeats)):
             outcome = await task(item, guidance, params)
             scores = score_item(item.expected, outcome)
             scores["quality"] = quality(scores)
             runs.append(scores)
+            if record_synthetic_failures and scores["quality"] < worst_quality:
+                worst_outcome, worst_quality = outcome, scores["quality"]
         names = {key for run in runs for key in run}
         per_item[item.id] = {
             key: statistics.fmean(run[key] for run in runs if key in run) for key in names
         }
         # 安全取最坏情况：任何一次重复违规都计入。
         per_item[item.id]["safety_violation"] = max(run["safety_violation"] for run in runs)
-        if record_synthetic_failures:
+        if worst_outcome is not None:
             from src.evaluation.synthetic import record_synthetic_failure
 
-            record_synthetic_failure(item, outcome, per_item[item.id]["quality"], store)
+            # 失败证据应来自实际失败的那次运行，即使最后一次重试通过。
+            record_synthetic_failure(item, worst_outcome, per_item[item.id]["quality"], store)
     metrics = _aggregate(per_item, items)
     run_id = new_id()
     store.execute(

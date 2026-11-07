@@ -24,10 +24,14 @@ def metrics_for_proposal(store, proposal: dict) -> dict[str, float]:
     ):
         predicate = "t.created_at >= ? AND json_extract(t.artifact_versions, ?) = ?"
         args = (since, path, version)
+        # 旧版本允许重复评分。每条 trace 只取最近的一票。
         rows = store.query(
-            "SELECT s.name,s.value FROM scores s JOIN traces t ON t.id=s.trace_id WHERE "
+            "SELECT name, value FROM ("
+            "SELECT s.name, s.value, ROW_NUMBER() OVER ("
+            "PARTITION BY s.trace_id, s.name ORDER BY s.created_at DESC, s.id DESC) AS latest "
+            "FROM scores s JOIN traces t ON t.id=s.trace_id WHERE "
             + predicate
-            + " AND s.name IN ('run_success','user_rating','tool_error_count')",
+            + " AND s.name IN ('run_success','user_rating','tool_error_count')) WHERE latest = 1",
             args,
         )
         grouped = {}

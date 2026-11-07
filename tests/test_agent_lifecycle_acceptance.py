@@ -193,7 +193,10 @@ def test_synthetic_failures_are_explicit_and_deduplicated(isolated_ops):
     assert item.id == key and item.provenance == "synthetic"
     outcome = RunOutcome("unknown", status="error", synthetic_fixture=True)
     first = record_synthetic_failure(item, outcome, 0.0, isolated_ops)
-    assert first and record_synthetic_failure(item, outcome, 0.0, isolated_ops) == first
+    assert first
+    isolated_ops.execute("UPDATE traces SET created_at = 0 WHERE id = ?", (first,))
+    assert mine_failures() == []
+    assert record_synthetic_failure(item, outcome, 0.0, isolated_ops) == first
     assert len(mine_failures()) == 1
     private = DatasetItem(
         "private", "train", "x", "", "private content", {}, "synthetic", "private-origin"

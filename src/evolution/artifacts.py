@@ -1,4 +1,4 @@
-"""带版本、可演化的配置产物（prompt、experience、params）。
+"""带版本、可演化的配置产物（prompt、params）。
 
 自进化只允许修改这些产物；代码以及 ``src/agent/prompts.py`` 中的安全前缀
 永远不会被演化循环写入。标签沿用 Langfuse 的 prompt 管理约定：
@@ -60,7 +60,7 @@ class Artifact:
 
 
 class ArtifactRegistry:
-    """创建、打标签、解析并回滚产物版本。"""
+    """保存产物版本并管理线上、灰度与归档标签。"""
 
     def __init__(self, store: OpsStore | None = None):
         self._store = store
@@ -127,8 +127,13 @@ class ArtifactRegistry:
                 # 可能已有其他进程完成了同一迁移。
                 return self.by_label(kind, "production") or current
             return current
-        content = DEFAULT_GUIDANCE if kind == "prompt" else default_params()
-        return self.create(kind, content, label="production", note="built-in default")
+        with self.store.transaction(immediate=True):
+            # 不同线程或进程首次访问时，等待者须重新读取已写入的默认版本。
+            current = self.by_label(kind, "production")
+            if current:
+                return current
+            content = DEFAULT_GUIDANCE if kind == "prompt" else default_params()
+            return self.create(kind, content, label="production", note="built-in default")
 
     def set_label(self, artifact_id: str, label: str) -> None:
         """把版本移到新标签；每种 kind 至多有一个 production/staging。"""
@@ -145,21 +150,6 @@ class ArtifactRegistry:
             conn.execute(
                 "UPDATE artifact_versions SET label = ? WHERE id = ?", (label, artifact_id)
             )
-
-    def rollback(self, kind: str) -> Artifact:
-        """恢复最近一个已归档的 production 前任版本。"""
-        current = self.production(kind)
-        if not current.parent_id:
-            raise ValueError(f"No earlier {kind} version to roll back to")
-        self.set_label(current.parent_id, "production")
-        self.store.execute(
-            "UPDATE artifact_versions SET label = 'rejected', note = ? WHERE id = ?",
-            (f"rolled back at {now():.0f}", current.id),
-        )
-        restored = self.get(current.parent_id)
-        if restored is None:
-            raise ValueError(f"Rollback target {current.parent_id} no longer exists")
-        return restored
 
     def history(self, kind: str, limit: int = 50) -> list[dict[str, Any]]:
         """列出该类型最近的版本元数据（不含内容），新的在前，最多 limit 条。"""

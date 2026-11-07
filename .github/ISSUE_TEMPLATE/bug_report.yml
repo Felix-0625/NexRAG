@@ -1,0 +1,25 @@
+name: 问题反馈
+description: 使用合成数据复现运行或逻辑问题
+body:
+  - type: markdown
+    attributes:
+      value: "安全漏洞请通过 Security → Report a vulnerability 私下提交。请勿提供账号、密钥或真实企业数据。"
+  - type: input
+    id: version
+    attributes:
+      label: 版本和环境
+      description: Release 标签或提交号、Windows 版本
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 提供合成输入、操作步骤、预期和实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 脱敏诊断信息
+      description: 可附相关日志片段，请去除个人信息和凭据

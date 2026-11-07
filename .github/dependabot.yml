@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+  - package-ecosystem: uv
+    directories:
+      - /
+      - /base/ingestion-service
+      - /base/retrieval-agent
+      - /base/search-agent
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      compatible-updates:
+        update-types:
+          - minor
+          - patch

@@ -42,7 +42,7 @@ def main() -> int:
     parser.add_argument(
         "--record-synthetic-failures",
         action="store_true",
-        help="Make only explicitly synthetic failures available to the improvement loop",
+        help="Record failures from isolated synthetic train items for RSI",
     )
     args = parser.parse_args()
 

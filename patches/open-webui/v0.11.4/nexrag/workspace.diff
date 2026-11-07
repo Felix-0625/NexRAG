@@ -5070,9 +5070,10 @@ new file mode 100644
 +                             {'title': ['生成分析报告', '结合业务数据与文档输出报告'], 'content': '结合我当前授权的业务数据和知识库，生成一份有来源依据的分析报告并导出文件。'},
 +                         ]})
 diff --git a/src/lib/apis/nexrag/index.ts b/src/lib/apis/nexrag/index.ts
+index 40141f8..79aab52 100644
 --- a/src/lib/apis/nexrag/index.ts
 +++ b/src/lib/apis/nexrag/index.ts
-@@ -3,7 +3,7 @@
+@@ -3,7 +3,7 @@ import { WEBUI_BASE_URL } from '$lib/constants';
  // PATCH NEXRAG OPS DASHBOARD
  // Calls go to the Open WebUI backend proxy (/api/nexrag/*), which forwards the
  // verified identity to NexRAG. The browser never holds NexRAG credentials.
@@ -5081,20 +5082,59 @@ diff --git a/src/lib/apis/nexrag/index.ts b/src/lib/apis/nexrag/index.ts
  	const res = await fetch(`${WEBUI_BASE_URL}/api/nexrag/${path}`, {
  		method,
  		headers: {
-@@ -74,2 +74,20 @@
- export const exportDownloadUrl = (relativePath: string) =>
- 	`${WEBUI_BASE_URL}/api/nexrag-download/${relativePath}`;
+@@ -31,8 +31,9 @@ export const reviewProposal = (
+ 	token: string,
+ 	id: string,
+ 	action: 'approve' | 'reject' | 'promote' | 'rollback',
+-	note = ''
+-) => request(token, `ops/proposals/${id}/${action}`, 'POST', action === 'promote' ? {} : { note });
++	note = '',
++	candidateId?: string
++) => request(token, `ops/proposals/${id}/${action}`, 'POST', action === 'promote' ? {} : { note, candidate_id: candidateId });
+ export const runEvolution = (token: string) => request(token, 'ops/evolution/run', 'POST', {});
+ 
+ export const getNexragMemories = (token: string, includeHistory = false) =>
+@@ -44,7 +45,7 @@ export const forgetNexragMemory = (token: string, id: string) =>
+ export const forgetAllNexragMemories = (token: string) => request(token, 'memory', 'DELETE');
+ // /PATCH NEXRAG OPS DASHBOARD
+ 
+-// Tenants, knowledge base, and exports (see src/api/ops_routes.py, exports_routes.py).
++// Tenants and exports (see src/api/ops_routes.py, exports_routes.py).
+ export const getTenants = (token: string) => request(token, 'ops/tenants');
+ export const createTenant = (token: string, tenant_id: string, label: string) =>
+ 	request(token, 'ops/tenants', 'POST', { tenant_id, label });
+@@ -55,21 +56,23 @@ export const grantTenant = (token: string, email: string, tenant_id: string) =>
+ export const revokeTenant = (token: string, email: string, tenant_id: string) =>
+ 	request(token, 'ops/tenants/revoke', 'POST', { email, tenant_id });
+ 
+-export const getKnowledgeDocuments = (token: string) => request(token, 'ops/knowledge');
+-export const deleteKnowledgeDocument = (token: string, fileId: string) =>
+-	request(token, `ops/knowledge/${fileId}`, 'DELETE');
+-export const uploadKnowledgeDocument = async (token: string, file: File) => {
+-	const form = new FormData();
+-	form.append('file', file);
+-	const res = await fetch(`${WEBUI_BASE_URL}/api/nexrag/ops/knowledge`, {
+-		method: 'POST',
+-		headers: { authorization: `Bearer ${token}` },
+-		body: form
++export const exportDownloadUrl = (relativePath: string) =>
++	`${WEBUI_BASE_URL}/api/nexrag-download/${relativePath}`;
 +
 +export const workspaceRequest = async (path: string, method = 'GET', body?: object) => {
 +	const res = await fetch(`${WEBUI_BASE_URL}/api/v1/nexrag/${path}`, {
 +		method, headers: { Authorization: `Bearer ${localStorage.token}`, 'Content-Type': 'application/json' },
 +		body: body ? JSON.stringify(body) : undefined
-+	});
+ 	});
+-	const json = await res.json().catch(() => ({}));
+-	if (!res.ok) throw json?.detail ?? `Upload failed (${res.status})`;
+-	return json;
 +	const payload = await res.json();
 +	if (!res.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail));
 +	return payload;
-+};
-+
+ };
+ 
+-export const exportDownloadUrl = (relativePath: string) =>
+-	`${WEBUI_BASE_URL}/api/nexrag-download/${relativePath}`;
 +export const downloadWithToken = async (url: string, filename: string) => {
 +	const response = await fetch(url, { headers: { Authorization: `Bearer ${localStorage.token}` } });
 +	if (!response.ok) throw new Error('文件下载失败，请检查访问权限');
@@ -5103,17 +5143,79 @@ diff --git a/src/lib/apis/nexrag/index.ts b/src/lib/apis/nexrag/index.ts
 +	anchor.click(); setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 +};
 diff --git a/src/lib/components/admin/Evaluations/NexRAG.svelte b/src/lib/components/admin/Evaluations/NexRAG.svelte
+index dde713d..bc5e254 100644
 --- a/src/lib/components/admin/Evaluations/NexRAG.svelte
 +++ b/src/lib/components/admin/Evaluations/NexRAG.svelte
-@@ -5,6 +5,7 @@
+@@ -5,49 +5,20 @@
  	import type { i18n as i18nType } from 'i18next';
  	import { toast } from 'svelte-sonner';
  	import Spinner from '$lib/components/common/Spinner.svelte';
 + import SyntheticEvaluation from '$lib/components/nexrag/SyntheticEvaluation.svelte';
  	import {
- 		deleteKnowledgeDocument,
- 		getKnowledgeDocuments,
-@@ -123,7 +124,7 @@
+-		deleteKnowledgeDocument,
+-		getKnowledgeDocuments,
+ 		getOpsOverview,
+ 		getProposal,
+ 		getProposals,
+ 		getTrace,
+ 		getTraces,
+ 		reviewProposal,
+-		runEvolution,
+-		uploadKnowledgeDocument
++		runEvolution
+ 	} from '$lib/apis/nexrag';
+ 
+ 	const i18n = getContext<Writable<i18nType>>('i18n');
+ 
+ 	let view: string = 'overview';
+-	// PATCH NEXRAG OPS DASHBOARD: admin-maintained shared knowledge base.
+-	let knowledgeDocs: any[] = [];
+-	let uploading = false;
+-	let fileInput: HTMLInputElement;
+-
+-	const loadKnowledge = async () => {
+-		knowledgeDocs = (await getKnowledgeDocuments(localStorage.token).catch((e) => (toast.error(`${e}`), null)))
+-			?.data ?? [];
+-	};
+-
+-	const uploadKnowledge = async (files: FileList | null) => {
+-		if (!files?.length) return;
+-		uploading = true;
+-		for (const file of files) {
+-			await uploadKnowledgeDocument(localStorage.token, file).catch((error) => toast.error(`${error}`));
+-		}
+-		uploading = false;
+-		if (fileInput) fileInput.value = '';
+-		await loadKnowledge();
+-	};
+-
+-	const deleteKnowledge = async (fileId: string) => {
+-		if (!window.confirm($i18n.t('Remove this file from the shared knowledge base?'))) return;
+-		await deleteKnowledgeDocument(localStorage.token, fileId).catch((error) => toast.error(`${error}`));
+-		await loadKnowledge();
+-	};
+-	// /PATCH NEXRAG OPS DASHBOARD
+ 	let loading = true;
+ 	let overview: any = null;
+ 	let traces: any[] = [];
+@@ -72,7 +43,6 @@
+ 				proposals = res.proposals;
+ 				backlog = res.backlog;
+ 			}
+-			if (view === 'knowledge') await loadKnowledge(); // PATCH NEXRAG OPS DASHBOARD
+ 		} catch (error) {
+ 			toast.error(`${error}`);
+ 		}
+@@ -91,7 +61,7 @@
+ 	const act = async (action: 'approve' | 'reject' | 'promote' | 'rollback') => {
+ 		if (!proposalDetail) return;
+ 		try {
+-			await reviewProposal(localStorage.token, proposalDetail.id, action, reviewNote);
++			await reviewProposal(localStorage.token, proposalDetail.id, action, reviewNote, proposalDetail.candidate_id);
+ 			toast.success(`${action}: ok`);
+ 			await openProposal(proposalDetail.id);
+ 			await load();
+@@ -123,7 +93,7 @@
  <div class="flex flex-col gap-3 py-2 text-sm">
  	<div class="flex items-center justify-between gap-2">
  		<div class="flex gap-1" role="tablist" aria-label="NexRAG operations">
@@ -5122,7 +5224,7 @@ diff --git a/src/lib/components/admin/Evaluations/NexRAG.svelte b/src/lib/compon
  				<button
  					type="button"
  					role="tab"
-@@ -150,7 +151,9 @@
+@@ -150,7 +120,9 @@
  		</button>
  	</div>
  
@@ -5133,6 +5235,60 @@ diff --git a/src/lib/components/admin/Evaluations/NexRAG.svelte b/src/lib/compon
  		<div class="flex justify-center py-10"><Spinner className="size-5" /></div>
  	{:else if view === 'overview' && overview}
  		{#if overview.backlog?.alert || overview.backlog?.queue_full}
+@@ -331,53 +303,6 @@
+ 				</tbody>
+ 			</table>
+ 		{/if}
+-	{:else if view === 'knowledge'}
+-		<div class="text-xs text-gray-500">
+-			{$i18n.t(
+-				'Files here feed the Agent’s shared search_knowledge_documents tool for every tenant. Each account’s own private knowledge base (Workspace > Knowledge) is separate and stays theirs.'
+-			)}
+-		</div>
+-		<div>
+-			<input
+-				bind:this={fileInput}
+-				type="file"
+-				multiple
+-				disabled={uploading}
+-				on:change={(e) => uploadKnowledge(e.currentTarget.files)}
+-				class="text-xs"
+-			/>
+-			{#if uploading}<span class="text-xs text-gray-500">{$i18n.t('Uploading')}...</span>{/if}
+-		</div>
+-		<table class="w-full text-xs">
+-			<thead class="text-gray-500">
+-				<tr>
+-					<th class="text-left font-normal">{$i18n.t('Filename')}</th>
+-					<th class="text-right font-normal">{$i18n.t('Chunks')}</th>
+-					<th class="text-left font-normal">{$i18n.t('Uploaded by')}</th>
+-					<th class="text-left font-normal">{$i18n.t('Uploaded at')}</th>
+-					<th></th>
+-				</tr>
+-			</thead>
+-			<tbody>
+-				{#each knowledgeDocs as doc}
+-					<tr class="border-t border-gray-100 dark:border-gray-850">
+-						<td>{doc.filename}</td>
+-						<td class="text-right">{doc.chunks_count}</td>
+-						<td>{doc.uploaded_by}</td>
+-						<td>{fmtTime(doc.created_at)}</td>
+-						<td class="text-right">
+-							<button
+-								type="button"
+-								class="text-gray-500 hover:text-red-600 hover:underline"
+-								on:click={() => deleteKnowledge(doc.file_id)}>{$i18n.t('Remove')}</button
+-							>
+-						</td>
+-					</tr>
+-				{:else}
+-					<tr><td colspan="5" class="py-6 text-center text-gray-500">{$i18n.t('No shared documents yet')}</td></tr>
+-				{/each}
+-			</tbody>
+-		</table>
+ 	{/if}
+ </div>
+ <!-- /PATCH NEXRAG OPS DASHBOARD -->
 diff --git a/src/lib/components/admin/Users/Tenants.svelte b/src/lib/components/admin/Users/Tenants.svelte
 --- a/src/lib/components/admin/Users/Tenants.svelte
 +++ b/src/lib/components/admin/Users/Tenants.svelte

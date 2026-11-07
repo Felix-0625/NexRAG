@@ -32,4 +32,4 @@
 
 ## Open WebUI 源码
 
-`scripts/prepare-webui.ps1` 固定检出 [AarhusAI/open-webui](https://github.com/AarhusAI/open-webui) 的 `v0.11.4`，提交 `8bd8b4fac5e059578ac0c74b3c18d11139f88b7d`，然后按序应用 `patches/open-webui/v0.11.4/nexrag/` 中的 tenant-selector、ops-dashboard、workspace、security-npm 四个项目补丁，其中 security-npm.diff 只修改 `package.json` 与 `package-lock.json` 以升级有安全修复的前端依赖。旧外部 RAG 补丁已经由独立原生桥替换，来源与许可处理见 [NOTICE](../patches/open-webui/NOTICE.md)。源码工作树位于被忽略的 `webui/`；后续定制应维护为本仓库可重放的补丁。使用与展示时遵守 [Open WebUI 许可证及品牌条款](https://docs.openwebui.com/license/)。
+`scripts/prepare-webui.ps1` 固定检出 [AarhusAI/open-webui](https://github.com/AarhusAI/open-webui) 的 `v0.11.4`，提交 `8bd8b4fac5e059578ac0c74b3c18d11139f88b7d`，然后按序应用 `patches/open-webui/v0.11.4/nexrag/` 中的 tenant-selector、ops-dashboard、workspace、security-npm 四个项目补丁，其中 security-npm.diff 维护依赖清单、锁和对应的 ESLint 配置。旧外部 RAG 补丁已经由独立原生桥替换，来源与许可处理见 [NOTICE](../patches/open-webui/NOTICE.md)。源码工作树位于被忽略的 `webui/`；后续定制应维护为本仓库可重放的补丁。使用与展示时遵守 [Open WebUI 许可证及品牌条款](https://docs.openwebui.com/license/)。

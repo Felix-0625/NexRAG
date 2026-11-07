@@ -138,7 +138,6 @@ async def _run_search_pipeline(query: str, context: str = "") -> SearchResult:
     if settings.search_fetch_page_content:
         fetch_start = time.monotonic()
         raw_results = await fetch_pages(
-            http_client,
             raw_results,
             max_pages=settings.search_fetch_max_pages,
             timeout=settings.search_fetch_timeout,

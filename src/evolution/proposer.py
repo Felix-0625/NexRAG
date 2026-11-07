@@ -1,8 +1,7 @@
 """为失败聚类生成候选产物。
 
 - prompt：由 LLM 针对典型失败和当前指引进行反思，返回修订后的指引
-  （OPRO/Reflexion 风格）。只展示 train 条目和线上 trace，holdout 条目绝不会
-  到达生成器。不可变的安全前缀不属于可编辑文本。
+  （OPRO/Reflexion 风格）。失败证据只来自合成 train 样本，安全前缀不属于可编辑文本。
 - params：围绕当前取值做有界邻域搜索，只在 train 划分上打分，
   最佳邻居成为候选。
 """
@@ -14,6 +13,7 @@ import json
 import re
 from typing import Any, Awaitable, Callable
 
+from src.evaluation.synthetic import TRAIN_FAILURE_TRACES
 from src.evolution.artifacts import PARAM_BOUNDS, clamp_params
 from src.evolution.miner import FailureCluster
 from src.midplatform.ops_store import OpsStore, get_ops_store
@@ -45,14 +45,13 @@ def cluster_evidence(
     evidence = []
     for trace_id in cluster.trace_ids[:limit]:
         trace = store.query_one(
-            "SELECT id, input_text, output_text, status, artifact_versions FROM traces WHERE id = ?",
+            "SELECT t.id, t.input_text, t.output_text, t.status "
+            + TRAIN_FAILURE_TRACES
+            + " AND t.id = ?",
             (trace_id,),
         )
         if not trace:
             continue
-        if json.loads(trace["artifact_versions"]).get("content_scope") == "private":
-            continue
-        trace.pop("artifact_versions")
         observations = store.query(
             "SELECT name, error FROM observations WHERE trace_id = ? ORDER BY position", (trace_id,)
         )
@@ -115,7 +114,7 @@ def param_neighbours(
 
 def focus_params(cluster: FailureCluster) -> list[str]:
     """与某类失败可能相关的参数。"""
-    if cluster.tool == "search_knowledge_documents" or cluster.reason == "needed_reflection":
+    if cluster.tool == "search_knowledge_documents":
         return ["retrieval_min_relevance", "knowledge_top_k", "max_tool_retries"]
     if cluster.tool in {"query_database", "get_business_schema"}:
         return ["prune_max_tables", "max_tool_retries"]

@@ -16,8 +16,8 @@ from typing import Any
 
 from src.config import settings
 from src.evaluation import datasets
-from src.evaluation.runner import Task, agent_task, run_experiment
-from src.evolution.artifacts import ArtifactRegistry, registry
+from src.evaluation.runner import ExperimentResult, Task, agent_task, run_experiment
+from src.evolution.artifacts import KINDS, ArtifactRegistry
 from src.evolution.canary import enough_samples, metrics_for_proposal, regressed_metrics
 from src.evolution.gate import LOWER_IS_BETTER, evaluate_gate
 from src.evolution.governance import Governance
@@ -53,6 +53,7 @@ def _change_report(
     verdict,
     rationale: str,
     evidence,
+    baseline_versions: dict[str, str],
 ) -> dict[str, Any]:
     if kind == "prompt":
         change = {"diff": prompt_diff(baseline.content, candidate.content)}
@@ -86,6 +87,7 @@ def _change_report(
             "candidate": cand_run.metrics,
             "baseline_run_id": base_run.run_id,
             "candidate_run_id": cand_run.run_id,
+            "baseline_versions": baseline_versions,
         },
         "gate": verdict.checks,
         "risk": _risk(base_run.metrics, cand_run.metrics),
@@ -119,14 +121,16 @@ class EvolutionCycle:
         self.completer = completer
         self.task = task
         self._store = store
-        self.reg = reg or registry
+        self.reg = reg or ArtifactRegistry(store)
         self.gov = Governance(store, self.reg)
 
     @property
     def store(self) -> OpsStore:
         return self._store or get_ops_store()
 
-    async def _evaluate(self, name: str, guidance: str, params: dict, ids: dict, items) -> Any:
+    async def _evaluate(
+        self, name: str, guidance: str, params: dict, ids: dict, items: list[datasets.DatasetItem]
+    ) -> ExperimentResult:
         return await run_experiment(
             name,
             items,
@@ -175,16 +179,20 @@ class EvolutionCycle:
             )
             return report
 
-        train = datasets.items(("train",), self.store)
-        gate_items = datasets.items(("train", "holdout", "regression"), self.store)
+        gate_items = datasets.items(datasets.SPLITS, self.store)
+        train = [i for i in gate_items if i.split == "train"]
         regression_ids = [i.id for i in gate_items if i.split == "regression"]
-        if not any(i.split == "holdout" for i in gate_items):
+        missing = set(datasets.SPLITS) - {i.split for i in gate_items}
+        if missing:
             report.actions.append(
-                {"action": "skipped", "detail": "no holdout items; refusing to evolve"}
+                {
+                    "action": "skipped",
+                    "detail": "missing evaluation splits: " + ", ".join(sorted(missing)),
+                }
             )
             return report
 
-        for kind in ("prompt", "params"):
+        for kind in KINDS:
             open_proposal = self.gov.open_for_kind(kind)
             if open_proposal and open_proposal["status"] == "canary":
                 report.actions.append(
@@ -232,20 +240,34 @@ class EvolutionCycle:
         )
         cand_prompt = candidate.content if kind == "prompt" else prompt.content
         cand_params = candidate.content if kind == "params" else params.content
+        baseline_ids = {"prompt": prompt.id, "params": params.id}
         base_run = await self._evaluate(
             f"{kind}-baseline",
             prompt.content,
             params.content,
-            {"prompt": prompt.id, "params": params.id},
+            baseline_ids,
             gate_items,
         )
         cand_run = await self._evaluate(
-            f"{kind}-candidate", cand_prompt, cand_params, {kind: candidate.id}, gate_items
+            f"{kind}-candidate",
+            cand_prompt,
+            cand_params,
+            {**baseline_ids, kind: candidate.id},
+            gate_items,
         )
         verdict = evaluate_gate(base_run, cand_run, regression_item_ids=regression_ids)
         evidence = cluster_evidence(cluster, self.store)
         change_report = _change_report(
-            kind, cluster, baseline, candidate, base_run, cand_run, verdict, rationale, evidence
+            kind,
+            cluster,
+            baseline,
+            candidate,
+            base_run,
+            cand_run,
+            verdict,
+            rationale,
+            evidence,
+            baseline_ids,
         )
         if not verdict.passed:
             self.reg.set_label(candidate.id, "rejected")
@@ -281,8 +303,12 @@ class EvolutionCycle:
                 continue
             dropped = regressed_metrics(metrics, settings.CANARY_MAX_DROP)
             if dropped:
-                self.gov.rollback(proposal["id"], f"canary regression on {', '.join(dropped)}")
-                results.append({"proposal_id": proposal["id"], "state": "rolled_back", **metrics})
+                if self.gov.rollback(
+                    proposal["id"], f"canary regression on {', '.join(dropped)}", canary_only=True
+                ):
+                    results.append(
+                        {"proposal_id": proposal["id"], "state": "rolled_back", **metrics}
+                    )
                 continue
             elapsed = (now() - (proposal["canary_started_at"] or now())) / 86_400
             state = "ready_to_promote" if elapsed >= settings.CANARY_MIN_DAYS else "observing"
