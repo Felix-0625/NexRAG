@@ -202,3 +202,7 @@ Node 更新至 22.23.4，启动器按官方 SHA-256 校验回退下载。Vite 6.
 可选搜索服务的网页补全文本以前先检查 DNS，再把原域名交给 HTTP 客户端连接，两次解析之间可被重绑定。现在每一跳都连接到通过校验的数值 IP，沿用原 Host 和 TLS SNI，拒绝内网、回环、保留地址和恶意重定向，网页抓取与搜索提供商连接使用不同客户端。回归验证了固定 IP、端口、SNI 和拒绝内网跳转。见 [HTTPX 的 SNI 扩展](https://www.python-httpx.org/advanced/extensions/#sni_hostname) 与 [OWASP SSRF 防护](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)。
 
 运营 API 移除了旧知识库面板专用的三个路由。管理员权限依赖独立维护，业务租户管理按原路径保留。反馈按回答保存最近一票，防止重复请求放大灰度评分。RSI 的验证集隔离、事务状态转换及指定版本回滚见 [评测与 RSI](../evaluation-and-rsi.md)。
+
+### 发布前追加检查
+
+启用仓库依赖告警后，确认搜索服务的开发依赖 filelock、msgpack 和 pip 仍有已知漏洞。审计已扩大为 uv 的全部可选依赖与开发组，修正三项锁定版本。v1.1.0 标签的发布被取消，最终交付使用 v1.1.1。npm 最终高危例外仍限定为可选浏览器朗读的三条公告。

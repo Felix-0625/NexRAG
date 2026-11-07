@@ -1,4 +1,4 @@
-# Audit pinned production package versions. No application/user content is sent.
+# Audit pinned runtime and development dependencies. No application/user content is sent.
 param([ValidateSet('all', 'core', 'ingestion', 'retrieval', 'search', 'webui')][string]$Scope = 'all')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -17,7 +17,7 @@ foreach ($item in $scopes) {
             'search' { Join-Path $root 'base/search-agent' }
             default { $root }
         }
-        & $uv.Source export --project $project --frozen --no-dev --no-hashes --no-emit-project --format requirements-txt --output-file $requirements | Out-Null
+        & $uv.Source export --project $project --frozen --all-extras --all-groups --no-hashes --no-emit-project --format requirements-txt --output-file $requirements | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Failed to export the frozen $item dependencies." }
     }
     $report = Join-Path $output "$item.json"
