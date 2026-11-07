@@ -32,7 +32,7 @@ jobs:
     name: Lock file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -47,7 +47,7 @@ jobs:
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -61,7 +61,7 @@ jobs:
     name: Native core and patched WebUI contracts
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -88,7 +88,7 @@ jobs:
     name: Patched browser components
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -114,7 +114,7 @@ jobs:
       run:
         working-directory: base/${{ matrix.service }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
@@ -125,7 +125,7 @@ jobs:
     name: Known npm vulnerabilities
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -143,7 +143,7 @@ jobs:
       matrix:
         scope: [core, ingestion, retrieval, search, webui]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v4
       - shell: pwsh
         run: ./scripts/audit-dependencies.ps1 -Scope ${{ matrix.scope }}
