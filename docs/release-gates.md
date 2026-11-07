@@ -16,7 +16,7 @@ uv sync --frozen --group dev --python 3.12
 .\scripts\check-code.ps1 -IncludeWebUI -IncludeRagServices
 .\scripts\audit-dependencies.ps1
 node scripts/audit-webui.mjs
-uv run python scripts/check-repository.py --release-tag v1.1.0
+uv run python scripts/check-repository.py --release-tag v1.1.1
 ```
 
 ## 发布流程
