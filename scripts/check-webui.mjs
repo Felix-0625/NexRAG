@@ -1,5 +1,5 @@
-// Compile every Svelte component shipped by the maintained patch chain.
-// Use Open WebUI's pinned compiler, never a globally installed package.
+// 编译维护补丁链中交付的所有 Svelte 组件。
+// 使用 Open WebUI 锁定的编译器，不调用全局安装的包。
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
