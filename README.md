@@ -1,16 +1,16 @@
 # NexRAG · 本地 Agentic RAG
 
-NexRAG 是一个以知识检索和业务数据库联合分析为核心的本地项目。它复用 Open WebUI 网页与 AarhusAI 摄入/检索管线，由一个 Agent 调用受权限约束的 SQL、知识检索、工具和导出能力。轻量数据中台负责账号授权、业务连接、知识权限、模型配置和运行治理，不引入分布式数仓组件。
+NexRAG 是一款在本机运行的知识检索与业务数据分析应用。通过基于 Open WebUI 的工作空间，一个 Agent 可在授权范围内检索知识、查询只读业务数据库，并按实际证据生成和导出结果。数据中台统一管理账号授权、数据源、知识权限、模型配置及运行治理。
 
 ## 一条命令启动
 
-目前支持 **Windows x64**。安装 Git 并 clone 仓库后，在项目根目录执行：
+目前支持 **Windows x64**。安装 Git 后，从 [GitHub Releases](https://github.com/Felix-0625/NexRAG/releases/latest) 下载 `NexRAG-<版本>-source.zip` 并解压，或直接克隆本仓库。进入解压或克隆后的目录运行：
 
 ```powershell
 .\start.cmd
 ```
 
-启动器自动准备项目内的 Python 3.12、Node.js、定制 Open WebUI、Qdrant 和依赖，再启动后端并打开浏览器。对话和 Embedding 默认使用本地 Ollama；若未安装则准备独立运行包。首次需要联网下载依赖和模型，后续复用 `.local-run/` 缓存。所有服务仅监听本机回环地址；默认网页 `http://127.0.0.1:3000`，端口冲突时以终端实际地址为准。
+Release 源码包包含启动器和 NexRAG 的前端补丁。首次运行时，启动器联网获取固定版本的 Open WebUI 源码，在本机应用补丁、安装前端依赖，然后启动定制界面并打开浏览器。生成的前端位于 `webui/`，无需另行下载。启动器也会准备项目使用的 Python 3.12、Node.js、Qdrant 和默认的本地 Ollama 模型。后续启动复用本机文件和缓存。服务只监听本机回环地址，网页默认是 `http://127.0.0.1:3000`，端口冲突时以终端实际地址为准。
 
 保持终端打开；按 Ctrl+C 停止本次启动的进程，账号、知识和产物保留。项目的启动和交付方式是原生进程，不提供容器部署入口，也不会操作机器上的其他项目或服务。
 
@@ -59,17 +59,13 @@ python scripts/run_experiment.py --splits holdout regression --repeats 2     # �
 | 路径 | 职责 |
 | --- | --- |
 | `src/` | Agent、数据中台、授权、评测、进化、记忆和文件边界 |
-| `base/ingestion-service/`、`base/retrieval-agent/` | 保留许可的 AarhusAI 基座源码和本项目修改 |
+| `base/ingestion-service/`、`base/retrieval-agent/` | 文档摄入与知识检索服务 |
 | `base/search-agent/` | 可选搜索适配基座，不自动部署外部搜索服务器 |
 | `patches/open-webui/v0.11.4/` | 固定上游版本上的可重放网页补丁；修改生成的 `webui/` 后也必须更新补丁 |
 | `scripts/` | 原生启动、准备、摄入、诊断和评测脚本 |
 | `examples/`、`evals/` | 可替换的演示配置和独立评测种子，不放业务机密 |
 | `data/`、`.local-run/` | 被忽略的运行数据、账号、模型缓存和产物；不要提交到公开仓库 |
 
-## 许可证与上游归属
+## 许可证
 
-本项目自身代码遵循 [MPL-2.0](LICENSE)。AarhusAI 基座各自保留 `LICENSE.txt` 和原作者版权，修改应按其许可公开；不得将上游源码当作本项目原创。
-
-Open WebUI 源码不随仓库提交。`scripts/prepare-webui.ps1` 检出 `AarhusAI/open-webui` 的固定版本 `v0.11.4`（提交 `8bd8b4fac5e059578ac0c74b3c18d11139f88b7d`），依次应用 `patches/open-webui/v0.11.4/nexrag/` 内的 tenant-selector、ops-dashboard、workspace、security-npm 四个补丁，其中 security-npm.diff 维护依赖清单、锁和对应的 ESLint 配置。上游品牌与许可条款仍适用，见 [Open WebUI License](https://docs.openwebui.com/license/)。复用的原始补丁归属见 [补丁声明](patches/open-webui/NOTICE.md)。本项目与 Open WebUI、AarhusAI 官方没有隶属或背书关系。
-
-Olist 配置和复现步骤见 [示例](examples/README.md)。原始数据按 CC BY-NC-SA 4.0 使用，模型权重和第三方资源各自适用原许可。见 [来源与许可](NOTICE.md)。
+自有代码采用 [MPL-2.0](LICENSE)。第三方组件、字体、模型与示例数据的来源和许可见 [NOTICE](NOTICE.md)。

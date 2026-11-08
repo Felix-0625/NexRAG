@@ -4,13 +4,15 @@ NexRAG 以原生进程运行 Open WebUI、单 Agent 后端、AarhusAI 文档摄�
 
 ## 一条命令
 
-支持 **Windows x64**。需要 Git 和首次准备时的网络连接，在仓库根目录执行：
+支持 **Windows x64**。需要 Git 和首次准备时的网络连接。在源码包解压目录或仓库根目录执行：
 
 ```powershell
 .\start.cmd
 ```
 
 无需预装 Python、Node.js、uv 或 Qdrant。缺失的运行包下载至项目目录，不修改系统 PATH。启动器使用独立 Python 3.12 环境；默认对话模型 `qwen3:4b-instruct`，Embedding `bge-m3`。
+
+建议将项目放在 `C:\NexRAG` 等短路径。旧发布包首次准备时若出现 `Filename too long`，请把源码包重新解压到短路径再运行。
 
 本机地址不等于本地推理：Ollama 也能转发云模型。启动器仅复用 `/api/status` 明确返回 `cloud.disabled=true` 的已有 Ollama，否则在可用回环端口启动自己管理的 `OLLAMA_NO_CLOUD=1` 进程，并再次验证状态。不会改全局 Ollama 配置或关闭其他服务。`.local-run/ollama-trust.json` 记录本轮地址与验证时间；旧版不支持验证时拒绝启动，而不是宣称机密数据可以安全外发。[Ollama 官方禁云说明](https://docs.ollama.com/faq#how-do-i-disable-ollamas-cloud-features)。
 
@@ -47,7 +49,7 @@ NexRAG 以原生进程运行 Open WebUI、单 Agent 后端、AarhusAI 文档摄�
 
 ## 网页和知识库
 
-网页基于固定的 Open WebUI `v0.11.4`。`scripts/prepare-webui.ps1` 从固定提交检出源码，并按序应用 `patches/open-webui/v0.11.4/nexrag/` 的 tenant-selector、ops-dashboard、workspace、security-npm 四个项目补丁，其中 security-npm.diff 只修改 `package.json` 与 `package-lock.json` 以升级有安全修复的前端依赖；`webui/` 是生成目录。修改该目录必须同步更新补丁，避免 clone 后丢失改造。旧的两份第三方远端 RAG 补丁已替换为独立原生适配，来源说明见 [NOTICE](../patches/open-webui/NOTICE.md)。
+Release 源码包包含前端准备脚本和四个补丁。首次运行 `start.cmd` 时，`scripts/prepare-webui.ps1` 会联网检出 Open WebUI `v0.11.4` 的固定提交，按序应用 tenant-selector、ops-dashboard、workspace 和 security-npm，随后启动器安装依赖并启动网页。生成的 `webui/` 在本机复用。维护前端时，应把修改同步到 `patches/open-webui/v0.11.4/nexrag/`，以便新用户从发布包重建相同界面。来源与许可见 [NOTICE](../patches/open-webui/NOTICE.md)。
 
 个人库通过“工作空间 → 知识库”创建。私人库只能由所有者或明确获得授权的账号访问，管理员身份不构成旁路。企业库由管理员维护并按授权下发，员工引用同一个库，管理员内容更新后无需复制到每个员工账号。知识权限和业务数据库范围是两套独立授权。
 
