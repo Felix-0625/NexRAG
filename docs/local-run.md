@@ -4,13 +4,15 @@ NexRAG 以原生进程运行 Open WebUI、单 Agent 后端、AarhusAI 文档摄�
 
 ## 一条命令
 
-支持 **Windows x64**。需要 Git 和首次准备时的网络连接，在仓库根目录执行：
+支持 **Windows x64**。需要 Git 和首次准备时的网络连接。在源码包解压目录或仓库根目录执行：
 
 ```powershell
 .\start.cmd
 ```
 
 无需预装 Python、Node.js、uv 或 Qdrant。缺失的运行包下载至项目目录，不修改系统 PATH。启动器使用独立 Python 3.12 环境；默认对话模型 `qwen3:4b-instruct`，Embedding `bge-m3`。
+
+建议将项目放在 `C:\NexRAG` 等短路径。旧发布包首次准备时若出现 `Filename too long`，请把源码包重新解压到短路径再运行。
 
 本机地址不等于本地推理：Ollama 也能转发云模型。启动器仅复用 `/api/status` 明确返回 `cloud.disabled=true` 的已有 Ollama，否则在可用回环端口启动自己管理的 `OLLAMA_NO_CLOUD=1` 进程，并再次验证状态。不会改全局 Ollama 配置或关闭其他服务。`.local-run/ollama-trust.json` 记录本轮地址与验证时间；旧版不支持验证时拒绝启动，而不是宣称机密数据可以安全外发。[Ollama 官方禁云说明](https://docs.ollama.com/faq#how-do-i-disable-ollamas-cloud-features)。
 

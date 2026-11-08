@@ -78,8 +78,10 @@ function Initialize-WebUISource {
     try {
         # 选项只影响本次公开克隆，不修改全局 Git、代理或 TLS 配置。
         # 无进展传输在 120 秒后退出，Git 进程总时限为八分钟。
+        # 临时检出路径比最终 webui/ 更深；仅为该检出启用 Git for Windows 长路径支持。
         $arguments = @('-c', 'http.lowSpeedLimit=1024', '-c', 'http.lowSpeedTime=120',
-                       'clone', '--depth', '1', '--branch', $upstreamTag, '--', $upstreamUrl,
+                       'clone', '--config', 'core.longpaths=true', '--depth', '1',
+                       '--branch', $upstreamTag, '--', $upstreamUrl,
                        ('"{0}"' -f $repository))
         $clone = Start-Process -FilePath (Get-Command git).Source -ArgumentList $arguments `
             -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $attemptRoot 'git.stdout.log') `
