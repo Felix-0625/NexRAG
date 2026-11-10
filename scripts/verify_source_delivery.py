@@ -1,8 +1,8 @@
-"""把当前待交付的源码导出到全新的原生验收文件夹。
+"""Export current deliverable source into a fresh native acceptance directory.
 
-不会提交，也不会克隆远程版本。它对已跟踪文件及产品新增文件做快照，
-排除本地状态，并记录每个文件的 SHA256。请单独运行导出目录中的 start.cmd，
-以便在没有本检出目录里生成的 WebUI、虚拟环境、账户数据库或服务凭据的情况下检查引导流程。
+Do not commit or clone. Snapshot tracked and product-added files, excluding machine state,
+and record SHA-256 hashes. Run the exported start.cmd separately to test clean bootstrap
+without generated WebUI, virtual environments, accounts, or service secrets.
 """
 
 from __future__ import annotations
@@ -31,13 +31,13 @@ SECRET_NAMES = {
 
 
 def git_paths(root: Path, *arguments: str) -> list[str]:
-    """运行 git ls-files -z 并附加给定参数，返回仓库相对路径列表。"""
+    """Run git ls-files with extra arguments and return repository-relative paths."""
     output = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z", *arguments])
     return [item for item in output.decode("utf-8").split("\0") if item]
 
 
 def local_secret_values(root: Path) -> list[bytes]:
-    """只比较已知的机器密钥，绝不打印或复制其值。"""
+    """Compare only known machine secrets without printing or copying their values."""
     config = root / ".env"
     if not config.exists():
         return []
@@ -56,7 +56,9 @@ def local_secret_values(root: Path) -> list[bytes]:
 
 
 def export_source(root: Path, destination: Path) -> dict:
-    """把已跟踪文件及产品新增文件导出到 root/.local-run 下全新的 destination，排除本地状态；发现已知本地凭据、越界链接或导出期间源码变化时抛出异常，返回含 SHA256 的清单。"""
+    """Export a fresh local snapshot with hashes, rejecting secrets, unsafe links, and concurrent
+    source changes.
+    """
     root, destination = root.resolve(), destination.resolve()
     acceptance_root = (root / ".local-run").resolve()
     if not destination.is_relative_to(acceptance_root):
@@ -102,7 +104,7 @@ def export_source(root: Path, destination: Path) -> dict:
                 "tracked": name in tracked,
             }
         )
-    # 检测并发的源码变动，避免把混合状态的快照误标为一致快照。
+    # Detect concurrent edits rather than labeling a mixed-state export as consistent.
     for item in files:
         if hashlib.sha256((root / item["path"]).read_bytes()).hexdigest() != item["sha256"]:
             raise RuntimeError(

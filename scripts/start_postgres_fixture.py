@@ -1,8 +1,8 @@
-"""启动一个一次性的、需密码认证的回环 PostgreSQL 验收服务器。
+"""Start a disposable password-authenticated loopback PostgreSQL acceptance server.
 
-这是可选的开发辅助工具，不是产品运行时依赖。需单独下载官方 EDB Windows ZIP，
-核对其公布的校验和，再传入解压后的 pgsql 目录。集群数据和凭据都放在
-被忽略的 .local-run 目录下。本工具不会安装任何操作系统服务。
+This optional developer helper is not a runtime dependency. Supply a separately downloaded,
+checksum-verified EDB Windows distribution. Keep cluster data and credentials in ignored
+.local-run storage and install no OS service.
 """
 
 from __future__ import annotations
@@ -22,10 +22,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(command, *, logfile):
-    """运行命令，输出追加到日志文件并设 90 秒超时；返回码非零时抛出 RuntimeError。"""
+    """Run a command with logged output and a 90-second timeout; reject nonzero exit codes."""
     with logfile.open("ab") as stream:
-        # 脱离终端的 Windows 服务器即使在 pg_ctl 退出后，也可能继承捕获管道。
-        # 改用真实日志文件，避免无限等待管道 EOF。
+        # Detached Windows servers can inherit capture pipes after pg_ctl exits;
+        # real log files avoid waiting forever for pipe EOF.
         completed = subprocess.run(
             list(map(str, command)),
             stdin=subprocess.DEVNULL,
@@ -39,7 +39,7 @@ def run(command, *, logfile):
 
 
 def start(tools: Path) -> dict:
-    """用解压后的 pgsql 目录在 .local-run 下初始化 scram 认证的一次性集群，随机密码，仅监听 127.0.0.1 的空闲端口并启动，返回元数据。"""
+    """Initialize a disposable SCRAM cluster with a random password and free loopback port."""
     tools = tools.resolve()
     executables = {name: tools / "bin" / f"{name}.exe" for name in ("initdb", "pg_ctl")}
     if not all(path.is_file() for path in executables.values()):
@@ -97,7 +97,7 @@ def start(tools: Path) -> dict:
 
 
 def control(directory: Path, *, stop: bool) -> dict:
-    """只控制本工作区下被明确描述的 fixture。"""
+    """Control only an explicitly described fixture under this workspace."""
     directory = directory.resolve()
     allowed = (ROOT / ".local-run" / "postgres-acceptance").resolve()
     if not directory.is_relative_to(allowed) or directory == allowed:

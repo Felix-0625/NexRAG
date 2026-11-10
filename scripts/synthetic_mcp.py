@@ -1,8 +1,8 @@
-"""供浏览器验收使用的一次性本地 MCP fixture，不访问业务数据。
+"""Disposable loopback MCP fixture for browser acceptance, with no business access.
 
-用已安装的项目 Python 运行。该 fixture 只监听回环地址，仅提供一个整数加法工具，
-验证后请关闭其终端。它不安装凭据、不执行命令、不打开文件，也不使用网络客户端，
-产品不会自动启动它。
+Run with project Python and stop it after validation. It exposes integer addition only,
+installs no credentials, executes no commands, opens no files, uses no network client,
+and is never started automatically by the product.
 """
 
 import argparse

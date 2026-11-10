@@ -1,11 +1,7 @@
-"""把本地文档索引到 NexRAG 的共享 Agent 知识库集合。
+"""Index local documents into the shared agent knowledge collection.
 
-支持两种模式：
-1. 原生流水线（--native）：轻量的纯 Python 解析，采用父子层级分块
-   （"Payload Trick"），通过 OpenAI 兼容 API（Ollama/vLLM）直接生成嵌入，
-   并在本地原生进程内写入 Qdrant。
-2. 旧版上传模式（省略 --native 时的默认模式）：通过 HTTP 把文件分发给上游
-   AarhusAI 摄取服务。
+--native parses parent-child chunks locally, calls OpenAI-compatible embeddings, and
+writes Qdrant directly. Default legacy mode uploads to AarhusAI ingestion over HTTP.
 """
 
 from __future__ import annotations
@@ -22,13 +18,13 @@ from typing import Any, NamedTuple
 import httpx
 from dotenv import dotenv_values
 
-# 确保项目根目录在 sys.path 中
+# Make repository imports available when invoked as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.rag.native_chunker import NativeParentChildChunker
 
 
 def _documents(path: Path) -> list[tuple[Path, str]]:
-    """返回文件及可读的相对路径标签，供上传报告使用。"""
+    """Return files with readable relative labels for upload reports."""
     if not path.exists():
         raise FileNotFoundError(path)
     root = path if path.is_dir() else path.parent
@@ -39,14 +35,14 @@ def _documents(path: Path) -> list[tuple[Path, str]]:
 
 
 def _file_id(path: Path, collection: str) -> str:
-    """让重复上传的 ID 保持稳定，同时不合并来自两个文件夹的同名文件。"""
+    """Keep repeated-upload IDs stable without merging same-named files from different folders."""
     identity = f"{collection}\0{path.resolve()}"
     return hashlib.sha256(identity.encode()).hexdigest()[:32]
 
 
-# base/retrieval-agent/app/services/qdrant.py 约定的 Qdrant 向量名。该服务只有在
-# collection 含具名 sparse 向量时才走混合 RRF 路径；此时稠密向量也必须具名
-# （同一个 Qdrant collection 中，未命名的默认向量与具名 sparse 向量不能共存）。
+# Match the retrieval service's vector names: hybrid RRF requires
+# a named sparse vector and a named dense vector because Qdrant cannot mix
+# unnamed dense vectors with named sparse vectors in one collection.
 _DENSE_VECTOR_NAME = "text-dense"
 _SPARSE_VECTOR_NAME = "text-sparse"
 
@@ -57,7 +53,7 @@ def _embed_texts(
     api_key: str,
     model: str,
 ) -> list[list[float]]:
-    """通过 OpenAI 兼容的 /embeddings 端点生成文本嵌入。"""
+    """Embed text through the OpenAI-compatible embeddings endpoint."""
     if not texts:
         return []
     url = f"{api_base_url.rstrip('/')}/embeddings"
@@ -75,12 +71,10 @@ def _embed_texts(
 
 
 def _embed_sparse(texts: list[str], model_name: str) -> list[Any]:
-    """用本地 FastEmbed BM42 稀疏模型生成文本嵌入。
+    """Embed text with local FastEmbed BM42 and return Qdrant sparse vectors.
 
-    每段文本返回一个 ``qdrant_client`` 的 ``SparseVector``，与
-    base/retrieval-agent 在查询侧稀疏嵌入时加载的模型一致
-    （``SPARSE_MODEL`` / ``SPARSE_QUERY_MODEL``，默认
-    ``Qdrant/bm42-all-minilm-l6-v2-attentions``）。模型权重在首次使用时下载并缓存。
+    Match the retrieval service's SPARSE_MODEL/SPARSE_QUERY_MODEL, defaulting to
+    Qdrant/bm42-all-minilm-l6-v2-attentions. Download and cache weights on first use.
     """
     from fastembed import SparseTextEmbedding
     from qdrant_client.models import SparseVector
@@ -93,7 +87,7 @@ def _embed_sparse(texts: list[str], model_name: str) -> list[Any]:
 
 
 def _ensure_collection(client: Any, collection_name: str, dim: int, use_sparse: bool) -> None:
-    """collection 不存在时创建：具名稠密向量，需要时附带具名稀疏向量（IDF 修正）。"""
+    """Create named dense vectors and optional IDF-corrected sparse vectors when absent."""
     from qdrant_client.models import Distance, Modifier, SparseVectorParams, VectorParams
 
     if not client.collection_exists(collection_name):
@@ -115,7 +109,7 @@ def _build_points(
     embeddings: list[list[float]],
     sparse_embeddings: list[Any] | None,
 ) -> list[Any]:
-    """把分块与其稠密（及可选稀疏）向量组装成 Qdrant 点，点 ID 由分块 ID 稳定派生。"""
+    """Build Qdrant points from chunks and vectors using stable chunk-derived IDs."""
     from qdrant_client.models import PointStruct
 
     if sparse_embeddings is not None:
@@ -138,7 +132,7 @@ def _build_points(
 
 
 def _upsert_in_batches(client: Any, collection_name: str, points: list[Any]) -> None:
-    """按固定批大小写入，并等待每批落盘确认。"""
+    """Write fixed-size batches and await persistence acknowledgments."""
     batch_size = 64
     for i in range(0, len(points), batch_size):
         client.upsert(
@@ -149,11 +143,11 @@ def _upsert_in_batches(client: Any, collection_name: str, points: list[Any]) -> 
 
 
 def _delete_stale_versions(client: Any, collection_name: str, chunks: list[dict[str, Any]]) -> None:
-    """清除每个（知识范围, 文件 ID）下除当前 ingest_version 以外的旧版本点。"""
+    """Delete outdated ingest versions within each knowledge-scope and file-ID pair."""
     from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
 
-    # 只有在每个新批次都被确认写入后，才清除过期版本。逻辑知识范围和文件标识
-    # 缺一不可：别的知识库复用同一个文件 ID 时，绝不能删掉该知识库的点。
+    # Delete stale versions only after all new batches are acknowledged; both scope and file ID
+    # are necessary so another library reusing a file ID cannot lose its points.
     versions = {
         (
             chunk["payload"]["meta"]["collection_name"],
@@ -188,12 +182,10 @@ def _upsert_to_qdrant(
     qdrant_api_key: str | None,
     collection_name: str,
 ) -> None:
-    """把分块的稠密（及可选稀疏）嵌入和 payload 写入 Qdrant。
+    """Write chunk embeddings and payloads to Qdrant.
 
-    传入 ``sparse_embeddings`` 时，创建带具名稠密向量（``text-dense``）和
-    稀疏向量（``text-sparse``）的 collection，使 base/retrieval-agent 的混合 RRF
-    路径自动接管（见模块级向量名常量）。``sparse_embeddings`` 为 ``None``
-    （``--no-sparse``）时，退回只含稠密具名向量；检索随之平滑降级为纯稠密检索。
+    Sparse embeddings enable named text-dense and text-sparse vectors for hybrid RRF retrieval.
+    With --no-sparse, retain named dense vectors and degrade to dense-only retrieval.
     """
     from qdrant_client import QdrantClient
 
@@ -211,7 +203,7 @@ def _upsert_to_qdrant(
 
 
 class _NativeSettings(NamedTuple):
-    """原生摄取用到的、已按"命令行 > 环境变量 > .env > 默认值"解析好的配置。"""
+    """Native ingestion settings resolved as CLI, environment, .env, then defaults."""
 
     embedding_base: str
     embedding_key: str
@@ -253,10 +245,10 @@ def _embed_and_index(
     local_env: dict[str, str | None],
     settings: _NativeSettings,
 ) -> None:
-    """嵌入子块、写入 Qdrant 并打印索引结果。"""
-    # 嵌入子块：稠密向量走 OpenAI 兼容端点，稀疏向量用本地 FastEmbed BM42
-    # 模型（除非禁用），使原生摄取的文档与旧版 AarhusAI 流水线摄取的文档一样，
-    # 可通过 base/retrieval-agent 的混合 RRF 路径检索到。
+    """Embed child chunks, write Qdrant points, and print indexing results."""
+    # Match legacy ingestion's dense and BM42 sparse representations
+    # so native documents use the same hybrid retrieval path
+    # unless sparse embedding is explicitly disabled.
     child_texts = [c["text"] for c in chunks]
     embeddings = _embed_texts(
         child_texts,
@@ -268,7 +260,6 @@ def _embed_and_index(
         None if args.no_sparse else _embed_sparse(child_texts, settings.sparse_model)
     )
 
-    # 直接写入 Qdrant
     _upsert_to_qdrant(
         chunks=chunks,
         embeddings=embeddings,
@@ -289,7 +280,7 @@ def _ingest_native(
     args: argparse.Namespace,
     local_env: dict[str, str | None],
 ) -> int:
-    """执行不依赖容器的原生纯 Python 摄取。"""
+    """Run native pure-Python ingestion without containers."""
     chunker = NativeParentChildChunker(
         parent_chunk_size=args.parent_size,
         child_chunk_size=args.child_size,
@@ -334,7 +325,7 @@ def _ingest_legacy(
     args: argparse.Namespace,
     api_key: str,
 ) -> int:
-    """通过 HTTP 把文件分发给原生 AarhusAI 摄取服务。"""
+    """Upload files to the AarhusAI ingestion service over HTTP."""
     failures = 0
     with httpx.Client(timeout=300.0) as client:
         for path, label in files:
@@ -364,7 +355,7 @@ def _ingest_legacy(
 
 
 def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
-    """文档路径与运行模式相关的命令行参数。"""
+    """Define input-path and execution-mode CLI arguments."""
     parser.add_argument("path", type=Path, help="Document file or directory")
     parser.add_argument(
         "--native",
@@ -402,7 +393,7 @@ def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_embedding_arguments(parser: argparse.ArgumentParser, local_env: dict) -> None:
-    """Qdrant、嵌入模型、稀疏模型与逻辑 collection 相关的命令行参数。"""
+    """Define Qdrant, embedding, sparse-model, and logical-collection CLI arguments."""
     parser.add_argument(
         "--qdrant-url",
         default=None,
@@ -455,7 +446,7 @@ def _add_embedding_arguments(parser: argparse.ArgumentParser, local_env: dict) -
 
 
 def main() -> int:
-    """上传文档，或以原生方式把文档索引进 Qdrant。"""
+    """Upload documents or index them natively into Qdrant."""
     local_env = dotenv_values(Path(__file__).resolve().parent.parent / ".env")
     parser = argparse.ArgumentParser(description=__doc__)
     _add_input_arguments(parser)
@@ -470,7 +461,7 @@ def main() -> int:
     if args.native:
         return _ingest_native(files, args, local_env)
 
-    # 旧版模式需要 INGESTION_API_KEY
+    # Legacy uploads require INGESTION_API_KEY.
     api_key = os.getenv("INGESTION_API_KEY") or local_env.get("INGESTION_API_KEY")
     if not api_key or len(api_key) < 32:
         parser.error(

@@ -1,4 +1,4 @@
-"""验证 Ollama 仅在本地运行并准备模型，不触碰其他服务。"""
+"""Verify local-only Ollama and prepare models without touching other services."""
 
 import json
 import os
@@ -12,10 +12,10 @@ from urllib.parse import urlparse
 
 
 def ollama_cloud_disabled(endpoint: str, opener=None) -> bool:
-    """以服务端明确返回的状态为准，不能只凭回环地址就信任。
+    """Trust explicit server status, not loopback addressing alone.
 
-    Ollama 可以通过 localhost 代理云端模型。没有该状态端点的旧版本
-    无法证明"仅本地"的约定，因此会被拒绝。
+    Ollama can proxy cloud models through localhost; reject older servers without a status
+    endpoint because they cannot prove local-only execution.
     """
     opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
@@ -26,7 +26,7 @@ def ollama_cloud_disabled(endpoint: str, opener=None) -> bool:
 
 
 def _local_ollama_endpoints(base: dict) -> set[str]:
-    """配置中指向本机默认 Ollama 端口（11434）的端点集合。"""
+    """Collect configured local endpoints using Ollama's default port."""
     endpoints = {
         base.get("LLM_API_BASE", "http://localhost:11434/v1"),
         base.get("EMBEDDING_API_BASE_URL", "http://localhost:11434/v1"),
@@ -40,7 +40,7 @@ def _local_ollama_endpoints(base: dict) -> set[str]:
 
 
 def _find_ollama() -> str | None:
-    """优先用 PATH 上的 ollama，其次是默认安装目录；都没有则返回 None。"""
+    """Find Ollama on PATH or in its default install directory, otherwise return None."""
     ollama = shutil.which("ollama")
     if not ollama:
         candidate = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Ollama/ollama.exe"
@@ -49,7 +49,7 @@ def _find_ollama() -> str | None:
 
 
 def _install_ollama(state: Path, release_json, release_zip) -> str:
-    """从官方发布页下载并解压 Ollama 到检出目录内，返回可执行文件路径。"""
+    """Download an official Ollama release into the checkout and return its executable."""
     folder = state / "tools/ollama"
     if not (folder / "ollama.exe").exists():
         release = release_json("https://api.github.com/repos/ollama/ollama/releases/latest")
@@ -58,7 +58,7 @@ def _install_ollama(state: Path, release_json, release_zip) -> str:
 
 
 def _start_owned_ollama(base: dict, supervisor, ollama: str, root: Path, report) -> str:
-    """在回环地址上启动由本启动器管理的 Ollama（禁用云功能），返回其端点。"""
+    """Start launcher-owned Ollama on loopback with cloud features disabled."""
     report("Starting the local model service...")
     with socket.socket() as probe:
         try:
@@ -83,7 +83,7 @@ def _start_owned_ollama(base: dict, supervisor, ollama: str, root: Path, report)
 
 
 def _write_trust_record(state: Path, endpoint: str, owned: bool) -> None:
-    """记录已验证"仅本地"的 Ollama 端点，供其他进程读取。"""
+    """Record verified local-only endpoints for other processes."""
     state.mkdir(parents=True, exist_ok=True)
     (state / "ollama-trust.json").write_text(
         json.dumps(
@@ -100,7 +100,7 @@ def _write_trust_record(state: Path, endpoint: str, owned: bool) -> None:
 
 
 def _desired_models(base: dict, endpoint: str) -> set[str]:
-    """配置里指向已验证端点的对话/向量模型名称集合。"""
+    """Collect model names configured to use verified endpoints."""
     desired = set()
     if base.get("LLM_API_BASE", "http://localhost:11434/v1") == endpoint + "/v1":
         desired.add(base.get("LLM_MODEL_NAME", "qwen3:4b-instruct"))
@@ -110,9 +110,9 @@ def _desired_models(base: dict, endpoint: str) -> set[str]:
 
 
 def _pull_model(opener, endpoint: str, model: str, supervisor, report) -> None:
-    """通过 /api/pull 流式下载模型，每 15 秒汇报一次进度。"""
+    """Pull a model through streaming HTTP with periodic progress reports."""
     report(f"Downloading local model {model}; this first download can be several GB...")
-    # 即使运行中的 Ollama 服务在 PATH 上没有 CLI，也可以使用其 API。
+    # The API works even if the running server's CLI is absent from PATH.
     request = urllib.request.Request(
         endpoint + "/api/pull",
         data=json.dumps({"name": model, "stream": True}).encode(),
@@ -142,7 +142,9 @@ def prepare_ollama(
     release_json,
     release_zip,
 ) -> None:
-    """配置指向本机 Ollama 时，确认其已禁用云功能（必要时安装并启动受管实例，否则抛出 RuntimeError），记录信任并拉取缺失模型；无本机端点则直接返回。"""
+    """Verify local Ollama has cloud disabled, install or start an owned instance if needed, and
+    pull models.
+    """
     local = _local_ollama_endpoints(base)
     if not local:
         return
@@ -161,8 +163,8 @@ def prepare_ollama(
             )
     with opener.open(endpoint + "/api/tags", timeout=5) as response:
         models = json.load(response)
-    # 所有服务的环境变量都在本函数返回之后才构建。核心服务可借助这个已验证的
-    # 受管 URL 解析已保存的默认回环别名，无需改写已存的模型凭据或其他项目。
+    # Build service environments only after this returns so the core can resolve verified
+    # managed aliases without rewriting stored model credentials or unrelated projects.
     for name in ("LLM_API_BASE", "EMBEDDING_API_BASE_URL"):
         if base.get(name) in local:
             base[name] = endpoint + "/v1"

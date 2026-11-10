@@ -1,7 +1,7 @@
-"""用真实的本地模型，在一次性合成业务数据上跑验收。
+"""Run integration acceptance with a real local model and disposable synthetic data.
 
-这是集成检查，不是前端验收。不会复制任何真实员工数据、知识库集合、
-凭据或生产产物。所有评估存储和数据源 fixture 都放在新建的 .local-run 子目录中。
+This is not frontend acceptance. Copy no employee data, collections, credentials, or
+production artifacts; create fresh evaluation stores under .local-run.
 """
 
 from __future__ import annotations
@@ -29,9 +29,11 @@ from src.midplatform.ops_store import OpsStore, set_ops_store  # noqa: E402
 
 
 def create_fixture(directory: Path):
-    """把租户策略、导出目录和运维库路径指向 directory 下的新位置并关闭记忆功能，只改当前进程的 settings。"""
-    # 这个独立的 CLI 进程拥有自己的运维库。评估器为每个用例提供临时 adapter，
-    # 不会改动任何生产数据源路径。
+    """Point process-local policies, exports, and storage at fresh fixture paths and disable
+    memory.
+    """
+    # This standalone CLI owns its operations store; per-case temporary adapters
+    # never change production source paths.
     settings.TENANT_ACCESS_PATH = str(directory / "no-employee-policy.yaml")
     settings.EXPORTS_DIR = str(directory / "exports")
     settings.OPS_DB_PATH = str(directory / "ops.db")
@@ -39,7 +41,7 @@ def create_fixture(directory: Path):
 
 
 async def verify_memory(store):
-    """真实的抽取 + 真实的本地嵌入；用内存索引隔离 fixture。"""
+    """Exercise real extraction and local embeddings with an isolated in-memory vector index."""
     service = MemoryService(store, InMemoryVectorIndex(), HttpEmbedder(), completer=memory_complete)
     owner = MemoryScope("synthetic-memory-a", "synthetic-a", "synthetic-chat")
     other = MemoryScope("synthetic-memory-b", "synthetic-a", "synthetic-chat")
@@ -60,7 +62,7 @@ async def verify_memory(store):
 
 
 async def verify(args, directory):
-    """在 directory 下的一次性存储上，用真实本地模型跑合成评测、可选记忆检查和进化周期，返回验收报告。"""
+    """Run synthetic evaluation, optional memory checks, and evolution against disposable stores."""
     settings.LLM_API_BASE = args.ollama_url.rstrip("/")
     settings.LLM_API_KEY = "ollama"
     settings.LLM_MODEL_NAME = args.model
@@ -87,8 +89,8 @@ async def verify(args, directory):
             store=store,
         )
         memory = await verify_memory(store) if args.with_memory else {"status": "not_requested"}
-        # 在这个合成存储上运行治理/挖掘。若达不到最小的合格失败集，
-        # 就不声称有任何改进或晋升。
+        # Mine and govern only this synthetic store; if eligible failures are too few,
+        # do not claim an improvement or promotion.
         cycle = await EvolutionCycle(store=store, reg=registry).run()
         return {
             "model": args.model,
@@ -113,7 +115,9 @@ async def verify(args, directory):
 
 
 def main():
-    """仅接受回环模型端点，在 .local-run 的新临时目录中运行验收并写出报告；无安全违规、质量达标且源数据未变时返回 0，否则返回 1。"""
+    """Require loopback model endpoints and return zero only for safe, high-quality,
+    source-preserving runs.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434/v1")
     parser.add_argument("--model", default="qwen3:4b-instruct")

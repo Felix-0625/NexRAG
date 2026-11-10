@@ -1,4 +1,4 @@
-"""原生运行时配置、回环端口以及各服务的环境变量映射。"""
+"""Native configuration, loopback ports, and per-service environment mappings."""
 
 import contextlib
 import os
@@ -9,9 +9,12 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+_LEGACY_SPARSE_MODEL = "Qdrant/bm42-all-minilm-l6-v2-attentions"
+_LEGACY_KNOWLEDGE_INDEX = "nexrag_knowledge"
+
 
 def _generate_missing_secrets(target: Path, secret_names) -> None:
-    """为 .env 与进程环境中都缺失的密钥追加随机值，不改动已有内容。"""
+    """Generate absent secrets without replacing existing .env or process values."""
     values = dotenv_values(target)
     additions = []
     for name in secret_names:
@@ -23,17 +26,32 @@ def _generate_missing_secrets(target: Path, secret_names) -> None:
 
 
 def _merged_environment(root: Path, target: Path, secret_names) -> dict[str, str]:
-    """按 .env.example、.env、进程环境的顺序合并，并保护服务凭据不被空值覆盖。"""
+    """Merge example, local, and process settings without blanking service credentials."""
     result = {
         key: value
         for key, value in dotenv_values(root / ".env.example").items()
         if value is not None
     }
+    default_index = result.get("QDRANT_INDEX")
     file_values = {key: value for key, value in dotenv_values(target).items() if value is not None}
     result.update(file_values)
     result.update(os.environ)
-    # 与上面的生成检查一样，继承来的空变量也视为缺失，
-    # 不能抹掉已配置/已生成的服务凭据。
+    # Older installations could rely on the implicit BM42/index pair.
+    configured_index = os.environ.get("QDRANT_INDEX", file_values.get("QDRANT_INDEX"))
+    configured_model = os.environ.get("SPARSE_MODEL", file_values.get("SPARSE_MODEL"))
+    legacy_index = root / "data/qdrant/storage/collections" / _LEGACY_KNOWLEDGE_INDEX
+    if not configured_model and (
+        (configured_index and configured_index != default_index)
+        or (not configured_index and legacy_index.is_dir())
+    ):
+        result["SPARSE_MODEL"] = _LEGACY_SPARSE_MODEL
+    if (
+        not configured_index
+        and result.get("SPARSE_MODEL", "").lower() == _LEGACY_SPARSE_MODEL.lower()
+    ):
+        result["QDRANT_INDEX"] = _LEGACY_KNOWLEDGE_INDEX
+    # Treat inherited blank values as missing, just as secret generation does,
+    # so they cannot erase configured or generated credentials.
     for name in secret_names:
         if not result.get(name):
             result[name] = file_values[name]
@@ -42,8 +60,7 @@ def _merged_environment(root: Path, target: Path, secret_names) -> dict[str, str
 
 
 def _prefer_windows_powershell_modules(result: dict[str, str]) -> None:
-    """Python 可能继承 PowerShell 7 的模块搜索顺序。我们的 .ps1 辅助脚本运行在
-    Windows PowerShell 5 中，其内置模块必须排在 PowerShell 7 的同名不兼容模块之前。"""
+    """Prefer Windows PowerShell 5 built-ins over inherited incompatible PowerShell 7 modules."""
     windows_modules = str(
         Path(os.environ.get("SystemRoot", r"C:\Windows"))
         / "System32/WindowsPowerShell/v1.0/Modules"
@@ -52,7 +69,7 @@ def _prefer_windows_powershell_modules(result: dict[str, str]) -> None:
 
 
 def prepare_environment(root: Path, state: Path, secret_names) -> dict[str, str]:
-    """补全缺失的密钥，且不覆盖任何已配置的值。"""
+    """Fill missing secrets without overwriting configured values."""
     target = root / ".env"
     if not target.exists():
         target.write_text((root / ".env.example").read_text(encoding="utf-8"), encoding="utf-8")
@@ -60,7 +77,7 @@ def prepare_environment(root: Path, state: Path, secret_names) -> dict[str, str]
     result = _merged_environment(root, target, secret_names)
     if os.name == "nt":
         _prefer_windows_powershell_modules(result)
-    # 规范化已有安装中的旧主机别名，不改写用户配置，也不改动远程端点。
+    # Normalize old local aliases without rewriting configuration or remote endpoints.
     for name in ("LLM_API_BASE", "EMBEDDING_API_BASE_URL"):
         if name in result:
             result[name] = result[name].replace("host.docker.internal", "127.0.0.1")
@@ -78,8 +95,8 @@ def prepare_environment(root: Path, state: Path, secret_names) -> dict[str, str]
     result.setdefault("UV_HTTP_TIMEOUT", "120")
     result.setdefault("UV_CONCURRENT_DOWNLOADS", "4")
     result.setdefault("UV_LOCK_TIMEOUT", "1200")
-    # 在屏蔽 Xet 传输的 Windows 网络上，标准 HTTPS 更可靠；
-    # 这些默认值仍可在 .env 中覆盖。
+    # Standard HTTPS works more reliably where Windows networks block Xet;
+    # .env can still override these defaults.
     result.setdefault("HF_HUB_DISABLE_XET", "1")
     result.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     result.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
@@ -87,7 +104,7 @@ def prepare_environment(root: Path, state: Path, secret_names) -> dict[str, str]
 
 
 def pick_ports() -> dict[str, int]:
-    """选端口时一并预留所有端口，包括 Qdrant 的 gRPC 端口。"""
+    """Reserve every selected port together, including Qdrant gRPC."""
     selected = {}
     with contextlib.ExitStack() as stack:
         for name, preferred in [
@@ -115,15 +132,15 @@ def pick_ports() -> dict[str, int]:
 
 
 def url(port: int) -> str:
-    """返回回环地址 127.0.0.1 上该端口的 HTTP 基址。"""
+    """Return an HTTP base URL on 127.0.0.1."""
     return f"http://127.0.0.1:{port}"
 
 
 def qdrant_environment(base: dict[str, str], ports: dict[str, int], root: Path) -> dict[str, str]:
-    """避免应用的客户端 URL 被误当成 Qdrant 的无关 peer 命令行选项。"""
+    """Keep client URL settings from becoming unrelated Qdrant peer arguments."""
     environment = dict(base)
-    # Qdrant 会把这些变量当作集群 peer 参数，而 Python 服务把 QDRANT_URI 当作
-    # HTTP 客户端 URL。即使继承来的是空值，clap 也会拒绝启动。受管实例是单节点。
+    # Qdrant treats these variables as cluster peers while Python treats QDRANT_URI as
+    # an HTTP URL; even blank inherited values break clap on this single-node instance.
     for name in ("QDRANT_URI", "QDRANT_BOOTSTRAP"):
         environment.pop(name, None)
     environment.update(
@@ -150,7 +167,7 @@ def _ensure_data_folders(root: Path) -> None:
 
 
 def _sync_frontend_assets(root: Path, frontend_assets: Path) -> None:
-    """把 webui/static 中的资源同步到仅含资源的目录，已是最新的文件不重复复制。"""
+    """Sync frontend assets only when their content changes."""
     source_assets = root / "webui/static"
     if source_assets.is_dir():
         for source in source_assets.rglob("*"):
@@ -168,7 +185,7 @@ def _sync_frontend_assets(root: Path, frontend_assets: Path) -> None:
 def _common_environment(
     base: dict[str, str], ports: dict[str, int], root: Path
 ) -> tuple[dict[str, str], Path]:
-    """各服务共享的环境变量，同时返回已创建的导出目录。"""
+    """Build shared environments and ensure the export directory exists."""
     common = dict(base)
     common.update(
         QDRANT_URI=url(ports["qdrant"]),
@@ -181,6 +198,8 @@ def _common_environment(
     exports = (exports if exports.is_absolute() else root / exports).resolve()
     exports.mkdir(parents=True, exist_ok=True)
     common["EXPORTS_DIR"] = str(exports)
+    graph = Path(base.get("GRAPH_STORE_PATH") or "data/graph/entities.sqlite")
+    common["GRAPH_STORE_PATH"] = str((graph if graph.is_absolute() else root / graph).resolve())
     return common, exports
 
 
@@ -193,7 +212,9 @@ def _ingestion_environment(common: dict, base: dict[str, str], root: Path) -> di
         EMBEDDING_DIM=base.get("EMBEDDING_DIM", "1024"),
         EMBEDDING_PREFIX_DOC="",
         ENABLE_PARENT_CHILD_CHUNKS="true",
-        SPARSE_EMBEDDING_MODEL=base.get("SPARSE_MODEL", "Qdrant/bm42-all-minilm-l6-v2-attentions"),
+        SPARSE_EMBEDDING_MODEL=base.get("SPARSE_MODEL", _LEGACY_SPARSE_MODEL),
+        SPARSE_EMBEDDING_PROVIDER=base.get("SPARSE_EMBEDDING_PROVIDER")
+        or ("bge-m3" if base.get("SPARSE_MODEL", "").lower() == "baai/bge-m3" else "fastembed"),
         PYTHONPATH=os.pathsep.join([str(root), str(root / "base/ingestion-service")]),
     )
 
@@ -204,12 +225,14 @@ def _retrieval_environment(common: dict, base: dict[str, str], root: Path) -> di
         API_KEY=base["RETRIEVAL_API_KEY"],
         EMBEDDING_PREFIX_QUERY="",
         ENABLE_AGENTIC_RAG="false",
-        RERANK_FUSION="replace",
-        RERANK_TOP_K="3",
+        RERANK_FUSION=base.get("RERANK_FUSION", "replace"),
+        RERANK_TOP_K=base.get("RERANK_TOP_K", "3"),
         RERANK_REQUIRED="true",
         RERANK_MIN_SCORE=base.get("RERANK_MIN_SCORE", "0.05"),
         PYTHONPATH=os.pathsep.join([str(root), str(root / "base/retrieval-agent")]),
-        SPARSE_QUERY_MODEL=base.get("SPARSE_MODEL", "Qdrant/bm42-all-minilm-l6-v2-attentions"),
+        SPARSE_QUERY_MODEL=base.get("SPARSE_MODEL", _LEGACY_SPARSE_MODEL),
+        SPARSE_QUERY_PROVIDER=base.get("SPARSE_QUERY_PROVIDER")
+        or ("bge-m3" if base.get("SPARSE_MODEL", "").lower() == "baai/bge-m3" else "fastembed"),
     )
 
 
@@ -221,8 +244,8 @@ def _webui_environment(
     frontend_assets: Path,
     exports: Path,
 ) -> dict:
-    # 上游把精简依赖配置命名为 USE_SLIM_DOCKER；原生精简 Python 安装同样需要它，
-    # 但不会调用任何容器引擎。
+    # Upstream calls the slim-dependency flag USE_SLIM_DOCKER; native slim installs need it too,
+    # but no container engine is invoked.
     webui = dict(
         common,
         USE_SLIM_DOCKER="true",
@@ -257,7 +280,7 @@ def _webui_environment(
 
 
 def _apply_webui_feature_flags(webui: dict) -> None:
-    """关闭不需要的上游功能，并开启工作区相关功能与权限。"""
+    """Disable unneeded upstream features while enabling workspace capabilities."""
     for name in (
         "CHANNELS",
         "CALENDAR",
@@ -284,17 +307,17 @@ def _apply_webui_feature_flags(webui: dict) -> None:
 def service_environments(
     base: dict[str, str], ports: dict[str, int], *, root: Path, state: Path, report
 ) -> dict[str, dict]:
-    """为 nexrag、retrieval、ingestion、webui 与 frontend 各自构建环境变量字典，并准备数据目录和前端静态资源。"""
+    """Build isolated service environments, data directories, and frontend assets."""
     _ensure_data_folders(root)
-    # 上游后端在 import 时会从 build/static 刷新 STATIC_DIR。Vite 没有生产构建：
-    # 给它一个仅含资源的目录，避免清空源码检出里 backend/static 下的文件。
+    # Upstream refreshes STATIC_DIR from build/static at import, but Vite has no production build;
+    # use an assets-only directory so backend/static in the checkout is not cleared.
     frontend_assets = state / "webui-assets"
     _sync_frontend_assets(root, frontend_assets)
     common, exports = _common_environment(base, ports, root)
     ingestion = _ingestion_environment(common, base, root)
     retrieval = _retrieval_environment(common, base, root)
     webui = _webui_environment(common, base, ports, root, frontend_assets, exports)
-    # 只有存在真实的 SearXNG 端点时，才按需启用互联网搜索。
+    # Enable internet search only when a real SearXNG endpoint exists.
     if base.get("ENABLE_WEB_SEARCH", "").lower() == "true":
         report(
             "Optional web search requested; the workspace tools page shows its configuration status."
