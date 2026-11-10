@@ -36,6 +36,16 @@ async def lifespan(app: FastAPI):
 
     init_pipeline()
     qdrant_setup.ensure_payload_indexes()
+    if settings.enable_graph_rag:
+        from src.rag.entity_graph import backfill, warm_up
+
+        from app.pipelines.indexing import _raw_qdrant_client
+        from app.services.entity_graph import get_graph
+
+        get_graph()
+        warm_up()
+        graph_receipt = backfill(_raw_qdrant_client(), settings.qdrant_index, get_graph())
+        log.info("Entity graph ready: %s", graph_receipt)
 
     yield
 

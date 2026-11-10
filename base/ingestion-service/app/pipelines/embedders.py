@@ -133,10 +133,21 @@ def build_sparse_embedder(settings: Settings):
     if provider == "none":
         return None
 
+    if provider == "bge-m3":
+        if settings.sparse_embedding_model.lower() != "baai/bge-m3":
+            raise ValueError(
+                "The bge-m3 sparse provider requires SPARSE_EMBEDDING_MODEL=BAAI/bge-m3"
+            )
+        return BgeM3SparseDocumentEmbedder(settings)
+
     if provider == "fastembed":
         from haystack_integrations.components.embedders.fastembed import (
             FastembedSparseDocumentEmbedder,
         )
+
+        metadata_fields = _meta_fields_to_embed(settings)
+        if settings.enable_filename_retrieval:
+            metadata_fields.insert(0, "search_title")
 
         # See build_dense_embedder for why threads/parallel are pinned: the
         # sparse BM42 model is the CPU bottleneck that otherwise saturates all
@@ -146,11 +157,45 @@ def build_sparse_embedder(settings: Settings):
             cache_dir=settings.fastembed_cache_dir or None,
             threads=settings.resolved_embedding_threads(),
             parallel=1,
-            # Heading terms boost BM42 keyword matching too.
-            meta_fields_to_embed=_meta_fields_to_embed(settings),
+            meta_fields_to_embed=metadata_fields,
         )
 
     raise ValueError(
         f"Unknown SPARSE_EMBEDDING_PROVIDER={settings.sparse_embedding_provider!r} "
-        "(supported: fastembed | none)"
+        "(supported: fastembed | bge-m3 | none)"
     )
+
+
+@component
+class BgeM3SparseDocumentEmbedder:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.model = None
+
+    def warm_up(self):
+        if self.model is None:
+            from src.rag.bge_m3_sparse import BgeM3SparseEncoder
+
+            self.model = BgeM3SparseEncoder(
+                self.settings.bge_m3_model_path, self.settings.resolved_embedding_threads()
+            )
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]) -> dict:
+        from haystack.dataclasses import SparseEmbedding
+
+        self.warm_up()
+        metadata = _meta_fields_to_embed(self.settings)
+        if self.settings.enable_filename_retrieval:
+            metadata.insert(0, "search_title")
+        inputs = [
+            "\n".join(
+                [*(str(doc.meta[key]) for key in metadata if doc.meta.get(key)), doc.content or ""]
+            )
+            for doc in documents
+        ]
+        for document, vector in zip(documents, self.model.embed(inputs), strict=True):
+            document.sparse_embedding = SparseEmbedding(
+                indices=vector.indices.tolist(), values=vector.values.tolist()
+            )
+        return {"documents": documents}

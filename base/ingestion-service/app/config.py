@@ -1,6 +1,6 @@
 import os
 
-from pydantic import ValidationInfo, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 # Minimum length enforced on ``API_KEY``. The bearer is a shared static
@@ -309,6 +309,9 @@ class Settings(BaseSettings):
     enable_parent_child_chunks: bool = False
     parent_chunk_size: int = 1200
     parent_chunk_overlap: int = 0
+    # Store an original-text neighborhood alongside each embedded leaf.
+    enable_context_windows: bool = False
+    context_window_size: int = Field(default=1, ge=0, le=4)
     # markdown mode only: sections smaller than this many tokens merge into
     # adjacent ones (never past chunk_size), so heading-dense docs don't
     # produce tiny chunks that embed poorly and waste Qdrant points. 0
@@ -318,6 +321,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_chunk_sizes(self):
+        if self.enable_context_windows and not self.enable_parent_child_chunks:
+            raise ValueError("ENABLE_CONTEXT_WINDOWS requires ENABLE_PARENT_CHILD_CHUNKS")
         if self.chunk_min_size < 0:
             raise ValueError(f"CHUNK_MIN_SIZE must be >= 0; got {self.chunk_min_size}")
         if self.chunk_min_size > self.chunk_size:
@@ -365,6 +370,8 @@ class Settings(BaseSettings):
     # CHUNK_SPLIT_BY=markdown (the only mode that stamps the field). Flipping
     # this changes vectors, so reindex for consistency.
     embed_headers_breadcrumb: bool = True
+    # Keep the upload title in BM42's input and payload for optional reranking.
+    enable_filename_retrieval: bool = False
     # ----- Dense embedder HTTP budget (openai-compat / tei only) -----
     # Split connect/read deliberately: a blackholed endpoint must fail fast
     # (connect) while a slow-but-alive one still gets time to answer (read).
@@ -389,9 +396,13 @@ class Settings(BaseSettings):
 
     # ----- Sparse embedder (optional) -----
     enable_sparse_embeddings: bool = False
+    enable_five_channel_retrieval: bool = False
+    enable_graph_rag: bool = False
+    graph_store_path: str = "data/graph/entities.sqlite"
     # fastembed | none
     sparse_embedding_provider: str = "fastembed"
     sparse_embedding_model: str = "Qdrant/bm42-all-minilm-l6-v2-attentions"
+    bge_m3_model_path: str = ""
     # Persist downloaded sparse weights across native service restarts.
     fastembed_cache_dir: str = ""
 

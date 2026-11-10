@@ -17,6 +17,8 @@ An allow-list keeps the suffix predictable and bounded.
 
 from __future__ import annotations
 
+from pathlib import PureWindowsPath
+
 # Extensions the converters in this codebase actually dispatch on.
 # Mirrors ``KreuzbergRemoteConverter._EXTRA_TYPES`` plus common plain-text /
 # image cases. Lowercased for comparison; the returned suffix preserves
@@ -80,3 +82,12 @@ def safe_suffix(name: str) -> str:
     if raw.lower() in _ALLOWED_EXTENSIONS:
         return raw
     return ""
+
+
+def filename_search_title(filename: str) -> str:
+    """Derive bounded retrieval metadata from the upload name on either OS."""
+    name = PureWindowsPath(filename).name
+    suffix = safe_suffix(name)
+    if suffix:
+        name = name.removesuffix(suffix)
+    return " ".join(name.split())[:128].rstrip()

@@ -202,6 +202,15 @@ def test_build_sparse_breadcrumb_opt_out():
     assert e.meta_fields_to_embed == []
 
 
+def test_build_sparse_adds_upload_title_without_changing_dense_input():
+    settings = _settings(enable_sparse_embeddings=True, enable_filename_retrieval=True)
+    assert build_sparse_embedder(settings).meta_fields_to_embed == [
+        "search_title",
+        "headers_breadcrumb",
+    ]
+    assert build_dense_embedder(settings).meta_fields_to_embed == ["headers_breadcrumb"]
+
+
 # -------------------- Dense-embedding invariant --------------------
 
 

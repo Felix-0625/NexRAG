@@ -435,6 +435,9 @@ class ParentChildSplitter:
     """
 
     def __init__(self, settings: Settings):
+        self._context_window_size = (
+            settings.context_window_size if settings.enable_context_windows else None
+        )
         parent_settings = settings.model_copy(
             update={
                 "chunk_size": settings.parent_chunk_size,
@@ -452,6 +455,7 @@ class ParentChildSplitter:
         leaves: list[Document] = []
         for source in documents:
             split_id = 0
+            source_leaves: list[Document] = []
             parents = self._parent_splitter.run([source])["documents"]
             for parent_index, parent in enumerate(parents):
                 parent_text = parent.content or ""
@@ -472,8 +476,13 @@ class ParentChildSplitter:
                         "child_split_id": child_index,
                         "split_id": split_id,
                     }
-                    leaves.append(Document(content=child.content, meta=meta))
+                    source_leaves.append(Document(content=child.content, meta=meta))
                     split_id += 1
+            if self._context_window_size is not None:
+                from app.pipelines.context_windows import attach_context_windows
+
+                attach_context_windows(source, source_leaves, self._context_window_size)
+            leaves.extend(source_leaves)
         return {"documents": leaves}
 
 
