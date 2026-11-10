@@ -655,6 +655,7 @@ diff --git a/backend/open_webui/routers/evaluations.py b/backend/open_webui/rout
      headers = include_user_info_headers({'Authorization': f'Bearer {service_key}'}, user, request=request)
      body = {'trace_id': str(message_id), 'rating': 1 if int(rating) > 0 else -1,
 diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/files.py
+index 6502498..ff424d6 100644
 --- a/backend/open_webui/routers/files.py
 +++ b/backend/open_webui/routers/files.py
 @@ -1,4 +1,6 @@
@@ -664,7 +665,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
  import errno
  import hashlib
  import logging
-@@ -209,7 +211,7 @@
+@@ -209,7 +211,7 @@ async def process_uploaded_file(
                      knowledge = await Knowledges.get_knowledge_by_id(id=knowledge_id, db=db_session)
                      can_write = bool(knowledge) and (
                          knowledge.user_id == user.id
@@ -673,7 +674,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
                          or await AccessGrants.has_access(
                              user_id=user.id,
                              resource_type='knowledge',
-@@ -251,6 +253,9 @@
+@@ -251,6 +253,9 @@ async def process_uploaded_file(
                          )
                          if not knowledge_file:
                              raise Exception(f'Failed to link file {file_item.id} to knowledge {knowledge_id}')
@@ -683,7 +684,24 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
                          log.info('Linked file %s to knowledge %s', file_item.id, knowledge_id)
                  except Exception as e:
                      log.warning(f'Failed to link file {file_item.id} to knowledge {knowledge_id}: {e}')
-@@ -494,7 +499,7 @@
+@@ -361,10 +366,14 @@ async def upload_file_handler(
+                     detail=ERROR_MESSAGES.DEFAULT(f'File type {file_extension} is not allowed'),
+                 )
+ 
+-        # Prefer readable storage names for admins, but fall back if the filesystem rejects it.
++        # Keep display names in metadata and bound physical keys on every filesystem.
+         id = str(uuid.uuid4())
+         name = filename
+-        filename = f'{id}_{filename}'
++        filename = (
++            f'{id}.{file_extension}'
++            if file_extension and len(file_extension) <= 16 and file_extension.isalnum()
++            else id
++        )
+         tags = {
+             'OpenWebUI-User-Email': user.email,
+             'OpenWebUI-User-Id': user.id,
+@@ -494,7 +503,7 @@ async def list_files(
      db: AsyncSession = Depends(get_async_session),
  ):
      skip = (page - 1) * PAGE_SIZE
@@ -692,7 +710,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
  
      result = await Files.get_file_list(user_id=user_id, skip=skip, limit=PAGE_SIZE, db=db)
  
-@@ -528,7 +533,7 @@
+@@ -528,7 +537,7 @@ async def search_files(
      Uses SQL-based filtering with pagination for better performance.
      """
      # Determine user_id: null for admin with bypass (search all), user.id otherwise
@@ -701,7 +719,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
  
      # Use optimized database query with pagination
      files = await Files.search_files(
-@@ -563,7 +568,7 @@
+@@ -563,7 +572,7 @@ async def count_files(
      user=Depends(get_verified_user),
      db: AsyncSession = Depends(get_async_session),
  ):
@@ -710,7 +728,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
      return await Files.count_files_by_user_id(user_id=user_id, db=db)
  
  
-@@ -612,7 +617,7 @@
+@@ -612,7 +621,7 @@ async def get_file_by_id(id: str, user=Depends(get_verified_user), db: AsyncSess
              detail=ERROR_MESSAGES.NOT_FOUND,
          )
  
@@ -719,7 +737,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
          return file
      else:
          raise HTTPException(
-@@ -639,7 +644,7 @@
+@@ -639,7 +648,7 @@ async def get_file_process_status(
              detail=ERROR_MESSAGES.NOT_FOUND,
          )
  
@@ -728,7 +746,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
          if stream:
              MAX_FILE_PROCESSING_DURATION = 3600 * 2
  
-@@ -697,7 +702,7 @@
+@@ -697,7 +706,7 @@ async def get_file_data_content_by_id(
              detail=ERROR_MESSAGES.NOT_FOUND,
          )
  
@@ -737,7 +755,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
          return {'content': file.data.get('content', '')}
      else:
          raise HTTPException(
-@@ -731,7 +736,7 @@
+@@ -731,7 +740,7 @@ async def update_file_data_content_by_id(
              detail=ERROR_MESSAGES.NOT_FOUND,
          )
  
@@ -746,7 +764,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
          max_size = await Config.get('rag.file.max_size')
          if max_size and len(form_data.content.encode('utf-8')) > int(max_size) * 1024 * 1024:
              raise HTTPException(
-@@ -756,6 +761,11 @@
+@@ -756,6 +765,11 @@ async def update_file_data_content_by_id(
          knowledges = await Knowledges.get_knowledges_by_file_id(id, db=db)
          for knowledge in knowledges:
              try:
@@ -758,7 +776,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
                  old_vectors = await ASYNC_VECTOR_DB_CLIENT.query(collection_name=knowledge.id, filter={'file_id': id})
                  old_vector_ids = old_vectors.ids[0] if old_vectors and old_vectors.ids else []
  
-@@ -807,7 +817,7 @@
+@@ -807,7 +821,7 @@ async def get_file_content_by_id(
              detail=ERROR_MESSAGES.NOT_FOUND,
          )
  
@@ -767,7 +785,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
          try:
              file_path = await asyncio.to_thread(Storage.get_file, file.path)
              file_path = Path(file_path)
-@@ -874,7 +884,7 @@
+@@ -874,7 +888,7 @@ async def get_html_file_content_by_id(
              detail=ERROR_MESSAGES.NOT_FOUND,
          )
  
@@ -776,7 +794,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
          try:
              file_path = await asyncio.to_thread(Storage.get_file, file.path)
              file_path = Path(file_path)
-@@ -916,7 +926,7 @@
+@@ -916,7 +930,7 @@ async def get_file_content_by_id(
              detail=ERROR_MESSAGES.NOT_FOUND,
          )
  
@@ -785,7 +803,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
          file_path = file.path
  
          # Handle Unicode filenames
-@@ -982,7 +992,7 @@
+@@ -982,7 +996,7 @@ async def rename_file_by_id(
              detail=ERROR_MESSAGES.NOT_FOUND,
          )
  
@@ -794,7 +812,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
          result = await Files.update_file_name_by_id(id, form_data.filename, db=db)
          if result:
              await publish_event(
-@@ -1022,13 +1032,16 @@
+@@ -1022,13 +1036,16 @@ async def delete_file_by_id(
              detail=ERROR_MESSAGES.NOT_FOUND,
          )
  
@@ -812,7 +830,7 @@ diff --git a/backend/open_webui/routers/files.py b/backend/open_webui/routers/fi
              try:
                  await ASYNC_VECTOR_DB_CLIENT.delete(collection_name=knowledge.id, filter={'file_id': id})
                  if file.hash:
-@@ -1040,7 +1053,8 @@
+@@ -1040,7 +1057,8 @@ async def delete_file_by_id(
          if result:
              try:
                  await asyncio.to_thread(Storage.delete_file, file.path)

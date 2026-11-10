@@ -11,10 +11,19 @@ const require = createRequire(path.join(checkout, 'package.json'));
 const { compile } = require('svelte/compiler');
 const patchRoot = path.join(root, 'patches/open-webui/v0.11.4/nexrag');
 const components = new Set();
-for (const name of ['tenant-selector.diff', 'ops-dashboard.diff', 'workspace.diff']) {
+for (const name of ['tenant-selector.diff', 'ops-dashboard.diff', 'workspace.diff', 'security-npm.diff', 'fonts.diff']) {
   const patch = fs.readFileSync(path.join(patchRoot, name), 'utf8');
   for (const match of patch.matchAll(/^\+\+\+ b\/(.+\.svelte)$/gm)) {
     components.add(match[1].trim());
+  }
+}
+const fontFiles = fs.readdirSync(path.join(checkout, 'static/assets/fonts')).sort();
+if (fontFiles.length !== 1 || fontFiles[0] !== 'Inter-Variable.ttf') {
+  throw new Error(`Expected only Inter in static/assets/fonts, found: ${fontFiles.join(', ')}`);
+}
+for (const name of ['src/app.css', 'src/tailwind.css']) {
+  if (fs.readFileSync(path.join(checkout, name), 'utf8').includes('Vazirmatn')) {
+    throw new Error(`Unused Vazirmatn font reference remains in ${name}`);
   }
 }
 if (components.size === 0) throw new Error('The patch chain contains no Svelte components.');
