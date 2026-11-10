@@ -2,6 +2,24 @@
 
 版本遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.0] - 2026-11-10
+
+检索质量调优、代码规范化和合规打磨。**回答级指标与部分检索指标尚未达到既定目标**，实测值、业界参照与原因见 [目标达成与降级说明](docs/acceptance/final-status-20261110.md)。
+
+### 功能
+
+- 新增 `evals/quality` 可复现评测套件：公开数据集（CMRC2018、PubMedQA、LegalBench-RAG/CUAD）的冻结切分、检索指标、延迟压测、评委校准与门禁报告。
+- 法律域调优：`RERANK_MIN_SCORE` 默认为 0。`RETRIEVAL_CANDIDATE_LIMIT=150` 可选，约 +0.02 Recall，P95 增加约 2.4 s，因此默认不启用。
+- 新增 `docs/research/agentic-rag-survey.md`、`docs/api-routes.md`、`docs/third-party-licenses.md`。
+
+### 安全与工程
+
+- `src/memory/store.py` 的 `set_status` 对动态列名增加白名单校验。
+- 移除 WebUI 未使用的 Vazirmatn 字体，补丁增至五个（`fonts.diff`），同步更新准备与检查脚本。
+- 三个 base 子项目声明 `license = "MPL-2.0"`。
+- 拆分超长模块（评测报告、检索流水线、摄入索引、实体图），代码注释与 docstring 统一为英文，全库 `ruff format`。
+- 依赖审计高危 0，bandit 无高危，完整门禁（含三个基座项目与 WebUI 构建）通过。
+
 ## [1.0.0] - 2026-11-07
 
 NexRAG 首个正式开源版本，以知识检索和受授权业务数据库的联合分析为核心，支持 Windows x64 本地原生运行。
