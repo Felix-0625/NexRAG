@@ -1,4 +1,4 @@
-"""源码导出必须排除机器状态，并拒绝已知泄露的密钥。"""
+"""Source exports exclude machine state and reject known leaked secrets."""
 
 import subprocess
 
@@ -8,6 +8,7 @@ from scripts.verify_source_delivery import export_source
 
 
 def repository(tmp_path):
+    """Provide repository test data or behavior for this scenario."""
     root = tmp_path / "repository"
     root.mkdir()
     subprocess.run(["git", "init", "--quiet", root], check=True)

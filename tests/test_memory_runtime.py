@@ -1,4 +1,4 @@
-"""记忆辅助函数必须要求按 schema 约束的本地抽取。"""
+"""Memory helpers require local schema-constrained extraction."""
 
 from __future__ import annotations
 
@@ -43,6 +43,7 @@ def test_extraction_requests_numeric_schema(monkeypatch):
 
 
 def capture_completion(request, captured):
+    """Provide capture completion test data or behavior for this scenario."""
     captured.update(json.loads(request.content))
     return httpx.Response(200, json={"choices": [{"message": {"content": '{"items": []}'}}]})
 
@@ -53,6 +54,7 @@ def test_extraction_rejects_cloud_before_network(monkeypatch, configuration, mod
     monkeypatch.setattr(settings, "LLM_MODEL_NAME", model)
 
     def forbidden_client(**kwargs):
+        """Provide forbidden client test data or behavior for this scenario."""
         pytest.fail(
             "Cloud/disallowed extraction must be rejected before constructing an HTTP client"
         )

@@ -1,4 +1,4 @@
-"""针对跳过 SQL、编造数字这类验收失败的回归用例。"""
+"""Regressions for skipped SQL and fabricated numeric answers."""
 
 import asyncio
 
@@ -18,6 +18,7 @@ ROWS = [{"order_id": "B-001", "amount": 9000}, {"order_id": "B-002", "amount": 1
 
 
 def ledger():
+    """Build an evidence ledger for the scenario."""
     evidence = EvidenceLedger(required={"db", "kb"})
     evidence.add("kb", [{"content": "折扣上限6%，审批负责人陈经理。"}])
     return evidence
@@ -97,6 +98,7 @@ def test_real_agent_retry_falls_back_to_actual_rows(monkeypatch):
     called = False
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal called
         if not called:
             called = True
@@ -106,6 +108,7 @@ def test_real_agent_retry_falls_back_to_actual_rows(monkeypatch):
         return ModelResponse([TextPart("总金额18000，订单B-999。")])
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 "查询订单的总金额", UserContext(user_id="b", email="b@local", tenant_id="ui-b")
@@ -118,6 +121,7 @@ def test_real_agent_retry_falls_back_to_actual_rows(monkeypatch):
 
 def test_missing_sql_remains_failure_after_retries(monkeypatch):
     async def fake_search(*a, **kw):
+        """Provide fake search test data or behavior for this scenario."""
         return [{"content": "折扣6%", "source": "制度"}]
 
     monkeypatch.setattr(core_tools, "search_knowledge", fake_search)
@@ -125,6 +129,7 @@ def test_missing_sql_remains_failure_after_retries(monkeypatch):
     runner._agent = runner._build_agent()
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(
             model=TestModel(
                 call_tools=["search_knowledge_documents"],
@@ -186,11 +191,13 @@ def test_timeout_with_complete_evidence_uses_actual_results(monkeypatch):
     runner._agent = Mock()
 
     async def prepare(prompt, context):
+        """Provide prepare test data or behavior for this scenario."""
         from src.agent.agent import AgentDeps
 
         return AgentDeps(context=context), SimpleNamespace(versions={}, canary=False)
 
     async def slow_model(*a, **kw):
+        """Provide slow model test data or behavior for this scenario."""
         kw["deps"].ledger.add("db", ROWS, sql="SELECT order_id, amount FROM sales")
         raise TimeoutError()
 

@@ -1,4 +1,4 @@
-"""在任何内容改动或披露之前，先执行已发布的对话授权。"""
+"""Enforce shipped chat authorization before mutations or disclosures."""
 
 import ast
 import asyncio
@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 
 def shipped_function(path, name, namespace):
+    """Provide shipped function test data or behavior for this scenario."""
     tree = ast.parse(Path(path).read_text("utf8"))
     function = next(
         item
@@ -37,6 +38,7 @@ def shipped_function(path, name, namespace):
 
 @pytest.fixture
 def chat_boundary(monkeypatch):
+    """Provide chat boundary test data or behavior for this scenario."""
     monkeypatch.setenv("NEXRAG_WORKSPACE", "true")
     namespace = {"os": os, "HTTPException": HTTPException}
     privacy_path = "webui/backend/open_webui/utils/nexrag_privacy.py"
@@ -46,6 +48,7 @@ def chat_boundary(monkeypatch):
     mutated = AsyncMock(return_value=chat)
 
     async def owned(identifier, user_id, **kwargs):
+        """Provide owned test data or behavior for this scenario."""
         return chat if user_id == chat.user_id else None
 
     namespace.update(
@@ -100,7 +103,7 @@ def test_admin_cannot_use_message_mutation_to_read_employee_private_chat(chat_bo
     mutated.assert_not_called()
     namespace["get_event_emitter"].assert_not_called()
     namespace["publish_event"].assert_not_called()
-    # 同一条已发布路由仍允许其所有者访问，包括管理员自己的对话。
+    # The same shipped route still permits owners, including administrators' own chats.
     arguments["user"] = SimpleNamespace(id="employee", role="admin")
     result = asyncio.run(function(**arguments))
     assert result is not None

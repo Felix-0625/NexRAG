@@ -1,4 +1,4 @@
-"""分级冲突处理（L0-L4）与长期记忆的软失效。"""
+"""Tiered L0-L4 conflict handling and soft expiration of long-term memory."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ def candidate(
     scope: str = "tenant",
     kind: str = "fact",
 ) -> MemoryCandidate:
+    """Build a memory candidate with explicit test defaults."""
     return MemoryCandidate(
         scope=scope,
         kind=kind,
@@ -36,14 +37,17 @@ def candidate(
 
 @pytest.fixture
 def service(isolated_ops, embedder):
+    """Create an isolated memory service for the scenario."""
     return MemoryService(isolated_ops, InMemoryVectorIndex(), embedder)
 
 
 def write(service, cand, *, at, utterance="", scope=SCOPE):
+    """Provide write test data or behavior for this scenario."""
     return asyncio.run(service.write(cand, scope, utterance=utterance, at=at))
 
 
 def statuses(service, user="alice"):
+    """Provide statuses test data or behavior for this scenario."""
     return {
         r.value_text: r.status for r in service.store.list_for_user(user, include_inactive=True)
     }
@@ -105,6 +109,7 @@ def test_l4_close_contradiction_is_disputed_then_user_confirms(service):
 
 def test_adjudicator_failure_falls_back_to_disputed(isolated_ops, embedder):
     async def broken(_candidate, _record):
+        """Provide broken test data or behavior for this scenario."""
         raise RuntimeError("model down")
 
     svc = MemoryService(isolated_ops, InMemoryVectorIndex(), embedder, adjudicator=broken)

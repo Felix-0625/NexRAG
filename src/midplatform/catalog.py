@@ -1,4 +1,4 @@
-"""加载由运维方维护的业务 schema 与指标描述。"""
+"""Load operator-maintained business schemas and metric descriptions."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import yaml
 
 from src.config import settings
 
-# 在所有视图或通用查询中都会出现的通用停用词
+# Ignore common words that cannot distinguish views or generic queries.
 COMMON_STOPWORDS = frozenset(
     {
         "当前",
@@ -41,7 +41,7 @@ COMMON_STOPWORDS = frozenset(
 
 
 def _extract_query_tokens(text: str) -> set[str]:
-    """提取拉丁关键词，以及 CJK 的一元、二元和三元片段。"""
+    """Extract Latin keywords and CJK unigram, bigram, and trigram tokens."""
     text_lower = text.lower()
     tokens = set(re.findall(r"[a-z0-9_]{2,}", text_lower))
     cjk_chars = re.findall(r"[\u4e00-\u9fff]", text_lower)
@@ -59,7 +59,7 @@ def _extract_query_tokens(text: str) -> set[str]:
 
 
 class MetadataCatalog:
-    """提供给 Agent 业务 schema 工具的元数据目录。"""
+    """Metadata catalog exposed to the business-schema tool."""
 
     def __init__(self, config_path: str | None = None):
         self.config_path = Path(config_path or settings.METADATA_PATH)
@@ -67,14 +67,14 @@ class MetadataCatalog:
         self.load_metadata()
 
     def load_metadata(self) -> None:
-        """部署元数据缺失时直接失败，而不是掩盖错误的配置。"""
+        """Fail on missing deployment metadata instead of hiding misconfiguration."""
         if not self.config_path.is_file():
             raise FileNotFoundError(self.config_path)
         with open(self.config_path, "r", encoding="utf-8") as file:
             self.metadata = yaml.safe_load(file) or {}
 
     def prune_schema(self, query: str, max_tables: int = 2) -> list[str]:
-        """根据问题关键词动态选出最相关的表。"""
+        """Select relevant tables using question keywords."""
         tables = self.metadata.get("tables", {})
         if not tables:
             return []
@@ -92,13 +92,13 @@ class MetadataCatalog:
 
             for token in tokens:
                 weight = 1.0 if len(token) == 1 else (3.0 if len(token) == 2 else 5.0)
-                # 表名匹配
+
                 if token in name_lower:
                     scores[table_name] += weight * 2.0
-                # 表描述匹配
+
                 if token in desc_lower:
                     scores[table_name] += weight * 1.5
-                # 列匹配
+
                 for col_name, col_info in columns.items():
                     col_name_lower = col_name.lower()
                     col_desc_lower = str(col_info.get("description", "")).lower()
@@ -107,7 +107,7 @@ class MetadataCatalog:
                     if token in col_desc_lower:
                         scores[table_name] += weight * 1.2
 
-        # 检查指标相关性，并提升对应表的权重
+        # Metric matches boost their owning table so pruning retains required schema.
         for metric_name, metric_info in metrics.items():
             target_table = metric_info.get("table")
             if target_table in scores:
@@ -125,7 +125,7 @@ class MetadataCatalog:
         return selected if selected else list(tables.keys())[:max_tables]
 
     def get_table_schema_summary(self, allowed_tables: list[str] | None = None) -> str:
-        """描述已配置的公开视图，可只选其中一个子集。"""
+        """Describe configured public views, optionally restricted to selected tables."""
         tables = self.metadata.get("tables", {})
         lines = []
         for table_name, info in tables.items():

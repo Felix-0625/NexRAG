@@ -1,4 +1,4 @@
-"""只读的归一化收益率计算，以及由证据决定的展示。"""
+"""Read-only normalized-return calculations with evidence-controlled presentation."""
 
 from __future__ import annotations
 
@@ -15,17 +15,17 @@ from src.agent.indexed_returns import completed_comparisons, prepare_comparison
 
 
 def calculate_comparison(entries, binding, precision: int) -> dict:
-    """复用 Decimal 计算器，并保留真实基准值的来源。
+    """Reuse Decimal arithmetic while preserving provenance of the actual base.
 
-    两个收益率之差恰为 (left-right)/base*100。计算该等价形式，可避免在相减前对循环小数的中间收益率取整；
-    各自的收益率仍保留在来源信息中。
+    Compute the equivalent (left-right)/base*100 to avoid rounding repeating intermediate
+    returns before subtraction; retain individual returns in the provenance.
     """
     facts = binding["facts"]
     operands = [
         EvidenceOperand(
             evidence_id=fact["evidence_id"],
             value=fact["value"],
-            # 表格事实保留表头加行以做语义绑定；实际的数值引文本身必须是连续的来源文本。
+            # Keep headers with rows for semantic binding, but numeric quotes must remain contiguous source text.
             excerpt=fact["quote"].splitlines()[-1],
         )
         for fact in facts
@@ -59,7 +59,7 @@ def calculate_comparison(entries, binding, precision: int) -> dict:
 
 
 def register_indexed_return_tool(agent) -> None:
-    """绑定本轮来源、序列顺序和年份，注册指数投资收益率差工具。"""
+    """Register the return-difference tool bound to this turn's sources, series order, and years."""
 
     @agent.tool(strict=False)
     def calculate_indexed_return_difference(
@@ -105,7 +105,7 @@ def register_indexed_return_tool(agent) -> None:
 
 
 def render_comparison(report, ledger) -> str:
-    """仅用已完成且来源匹配的本轮计算渲染报告，拒绝混入无关业务指标。"""
+    """Render completed source-matching calculations, rejecting unrelated business metrics."""
     available = {entry["id"]: entry for entry in completed_comparisons(ledger)}
     if report.metric_ids or report.detail_evidence_ids:
         raise ValueError("Indexed investment report cannot cite unrelated database metrics")
@@ -120,7 +120,8 @@ def render_comparison(report, ledger) -> str:
         raise ValueError("Indexed return report must cite its actual source evidence")
 
     def literal(value):
-        # Markdown 单元格渲染时会转义自身的 HTML；这里转义 Markdown 语法，使 & 保持可读且不触发 HTML。
+        # Escape Markdown syntax, not HTML: the cell renderer handles HTML and preserves readable ampersands.
+        """Escape a value for safe literal Markdown rendering."""
         return re.sub(r"([\\`*_{}\[\]()#+.!|><&~-])", r"\\\1", str(value).replace("\n", " "))
 
     rows = "\n".join(

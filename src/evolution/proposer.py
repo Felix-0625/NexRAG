@@ -1,9 +1,7 @@
-"""为失败聚类生成候选产物。
+"""Propose artifacts from synthetic training failures only.
 
-- prompt：由 LLM 针对典型失败和当前指引进行反思，返回修订后的指引
-  （OPRO/Reflexion 风格）。失败证据只来自合成 train 样本，安全前缀不属于可编辑文本。
-- params：围绕当前取值做有界邻域搜索，只在 train 划分上打分，
-  最佳邻居成为候选。
+Prompt proposals reflect on redacted failures without editing the safety prefix. Parameter
+proposals search bounded neighbors and select winners using train scores only.
 """
 
 from __future__ import annotations
@@ -40,7 +38,7 @@ PARAM_STEPS: dict[str, float] = {
 def cluster_evidence(
     cluster: FailureCluster, store: OpsStore | None = None, limit: int = 5
 ) -> list[dict[str, Any]]:
-    """供报告和反思提示词使用的、经脱敏的典型 trace。"""
+    """Return redacted representative traces for reports and reflection prompts."""
     store = store or get_ops_store()
     evidence = []
     for trace_id in cluster.trace_ids[:limit]:
@@ -68,9 +66,10 @@ def cluster_evidence(
 async def propose_prompt(
     current: str, cluster: FailureCluster, completer: Completer, store: OpsStore | None = None
 ) -> tuple[str, str] | None:
-    """让 LLM 依据失败聚类的脱敏证据重写当前指引，返回 (新指引, 理由)。
+    """Ask the model to revise guidance from redacted cluster evidence.
 
-    生成失败、内容为空、与原文相同或长度膨胀过大时返回 None，不产生候选。
+    Return revised guidance and rationale, or None on failure, empty or unchanged output,
+    or excessive growth.
     """
     evidence = cluster_evidence(cluster, store)
     payload = json.dumps(
@@ -85,7 +84,7 @@ async def propose_prompt(
         raw = await completer(REFLECT_PROMPT, payload)
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         data = json.loads(match.group(0)) if match else {}
-    except Exception:  # noqa: BLE001 - 生成器失败时不产生候选
+    except Exception:  # noqa: BLE001 - Generator failures produce no candidate.
         return None
     guidance = str(data.get("guidance", "")).strip()
     if not guidance or guidance == current.strip() or len(guidance) > 3 * len(current) + 2_000:
@@ -96,7 +95,7 @@ async def propose_prompt(
 def param_neighbours(
     current: dict[str, Any], focus: list[str] | None = None
 ) -> list[dict[str, float]]:
-    """对每个可调参数向上、向下各走一步，并限制在允许范围内。"""
+    """Generate one bounded step in each direction for every tunable parameter."""
     current = clamp_params(current)
     keys = focus or list(PARAM_BOUNDS)
     neighbours = []
@@ -113,7 +112,7 @@ def param_neighbours(
 
 
 def focus_params(cluster: FailureCluster) -> list[str]:
-    """与某类失败可能相关的参数。"""
+    """Return parameters plausibly relevant to this failure type."""
     if cluster.tool == "search_knowledge_documents":
         return ["retrieval_min_relevance", "knowledge_top_k", "max_tool_retries"]
     if cluster.tool in {"query_database", "get_business_schema"}:
@@ -122,7 +121,7 @@ def focus_params(cluster: FailureCluster) -> list[str]:
 
 
 def prompt_diff(old: str, new: str) -> str:
-    """生成线上版本与候选版本指引的统一 diff 文本。"""
+    """Return a unified diff between production and candidate guidance."""
     return "\n".join(
         difflib.unified_diff(
             old.splitlines(), new.splitlines(), "production", "candidate", lineterm=""

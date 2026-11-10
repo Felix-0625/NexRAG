@@ -1,4 +1,4 @@
-"""模型分发必须同时约束发现与执行，包括旧对话。"""
+"""Model distribution constrains discovery and execution, including old chats."""
 
 import ast
 import asyncio
@@ -20,6 +20,7 @@ from src.midplatform import agent_models
 
 
 def headers(user_id="admin", role="admin"):
+    """Build signed request headers for the test identity."""
     claims = dict(
         sub=user_id,
         email=f"{user_id}@local.test",
@@ -36,6 +37,7 @@ def headers(user_id="admin", role="admin"):
 
 @pytest.fixture
 def api(monkeypatch):
+    """Provide an isolated test API client."""
     monkeypatch.setattr(settings, "NEXRAG_SHARED_API_KEY", "k" * 32)
     monkeypatch.setattr(settings, "NEXRAG_USER_JWT_SECRET", "s" * 32)
     client = TestClient(app)
@@ -50,6 +52,7 @@ def api(monkeypatch):
 
 
 def form(**changes):
+    """Provide form test data or behavior for this scenario."""
     return (
         dict(
             name="Restricted local model",
@@ -71,6 +74,7 @@ def test_model_distribution_filters_all_catalogs_and_denies_revoked_old_chat(api
     monkeypatch.setattr(runner, "run", run)
 
     def ids(path, user_id):
+        """Provide ids test data or behavior for this scenario."""
         payload = api.get(path, headers=headers(user_id, "user")).json()
         return {item["id"] for item in payload.get("models", payload.get("data", []))}
 
@@ -142,6 +146,7 @@ def test_revocation_between_agent_model_requests_prevents_second_provider_call(a
     calls = []
 
     def provider(messages, info):
+        """Provide provider test data or behavior for this scenario."""
         calls.append(messages)
         agent_models.save_model(agent_models.ModelForm(**form(allowed_user_ids=[])), identifier)
         return ModelResponse(

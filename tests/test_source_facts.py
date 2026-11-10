@@ -1,4 +1,4 @@
-"""源文件布局、所请求的期间与算术角色必须一致。"""
+"""Source layouts, requested periods, and arithmetic roles must agree."""
 
 from decimal import Decimal
 
@@ -13,10 +13,12 @@ SOURCE = "Total rental expense was $120, $100 and $80 in fiscal 2024, 2023 and 2
 
 
 def operand(value, evidence_id="KB1"):
+    """Provide operand test data or behavior for this scenario."""
     return EvidenceOperand(evidence_id=evidence_id, value=Decimal(value), excerpt=SOURCE)
 
 
 def bind(text=SOURCE, prompt=QUESTION, left="120", right="100"):
+    """Provide bind test data or behavior for this scenario."""
     return bind_period_operands(prompt, operand(left), operand(right), lambda _: [text])
 
 
@@ -97,8 +99,8 @@ def test_qualified_money_sublist_does_not_bind_calendar_days_or_other_metric_amo
     assert certificate["facts"][0]["unit"] == "USD million"
     with pytest.raises(ValueError, match="Wrong temporal operand"):
         bind(text, prompt, "375", "139.9")
-    # 没有明确的末尾指标限定词，或中间夹有其他度量时，
-    # 直接取最后两个数字就是语义上的猜测。
+    # Without an explicit trailing metric qualifier, or with intervening metrics,
+    # choosing the last two numbers would guess semantics.
     with pytest.raises(ValueError):
         bind(text.replace("respectively , of", "respectively , for"), prompt, "153.7", "139.9")
     with pytest.raises(ValueError):
@@ -130,6 +132,7 @@ def test_registered_tool_retries_swapped_roles_before_ledger_mutation_then_compl
     step = 0
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal step
         step += 1
         if step == 1:
@@ -168,6 +171,7 @@ def test_registered_tool_retries_swapped_roles_before_ledger_mutation_then_compl
     evaluation.knowledge_documents = [{"source": "public-report.md", "content": SOURCE}]
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 "仅检索知识库，不查询业务数据库。" + QUESTION,
@@ -193,7 +197,9 @@ def test_registered_tool_retries_swapped_roles_before_ledger_mutation_then_compl
         for part in calls
         if isinstance(part.content, dict) and "temporal_binding" in part.content
     ]
-    assert len(successes) == 1  # 被拒绝的反向调用永远不会成为成功的证据。
+    assert (
+        len(successes) == 1
+    )  # Rejected reverse-direction calls must never become successful evidence.
     assert successes[0].content["rounded_result"] == "20"
 
 

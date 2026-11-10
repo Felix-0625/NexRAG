@@ -1,10 +1,7 @@
-"""后台记忆维护：会话提升、衰减、保留期清理。
+"""Maintain memory through session promotion, decay, and retention.
 
-- 空闲会话：持久的 task_state 结论经常规冲突消解后提升到 tenant 层，
-  会话内的副本归档。
-- 衰减：时效 x 重要性 x 使用频次低于阈值的记忆会被归档（状态 "archived"），
-  不做物理删除，因此可以恢复。
-- 保留期：超过 MEMORY_RETENTION_DAYS 且非 active 的记录会被清除。
+Promote durable idle-session task state after conflict resolution and archive its copy.
+Archive low-scoring memories for recovery, then delete inactive records beyond retention.
 """
 
 from __future__ import annotations
@@ -20,7 +17,7 @@ DECAY_FLOOR = 0.05
 
 
 def decay_score(importance: float, last_seen: float, access_count: int, at: float) -> float:
-    """Generative-Agents 风格的留存分数，取值 [0, 1]。"""
+    """Compute a Generative-Agents-style retention score in [0, 1]."""
     hours = max(at - last_seen, 0) / 3600
     recency = math.pow(0.995, hours)
     usage = 1 - math.exp(-0.5 * (access_count + 1))
@@ -28,7 +25,7 @@ def decay_score(importance: float, last_seen: float, access_count: int, at: floa
 
 
 async def promote_idle_sessions(service: MemoryService, at: float | None = None) -> int:
-    """将空闲对话的 task_state 记忆提升为 tenant 级事实。"""
+    """Promote idle-session task state to tenant-level facts."""
     at = at if at is not None else now()
     cutoff = at - settings.MEMORY_SESSION_IDLE_HOURS * 3600
     ops = service.store.ops
@@ -61,7 +58,7 @@ async def promote_idle_sessions(service: MemoryService, at: float | None = None)
 
 
 def decay_and_retain(service: MemoryService, at: float | None = None) -> dict[str, int]:
-    """归档已衰减的记忆，并清除超过保留期的非活跃记录。"""
+    """Archive decayed memories and delete inactive records beyond retention."""
     at = at if at is not None else now()
     ops = service.store.ops
     archived = 0

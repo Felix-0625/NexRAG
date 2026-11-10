@@ -1,4 +1,4 @@
-"""私有内容对应用管理员拒绝开放，也不进入全局学习。"""
+"""Private content denies administrator access and never enters shared learning."""
 
 import ast
 import asyncio
@@ -15,8 +15,8 @@ from src.observability.tracer import Tracer, TraceRecord
 
 
 def test_actual_webui_knowledge_acl_admin_has_no_bypass(monkeypatch):
-    # 用一个很小的模拟模型边界执行已发布的函数，避免在本进程中
-    # 再导入第二个 FastAPI 应用的数据库与配置。
+    # Run shipped functions against a minimal model boundary to avoid importing
+    # a second FastAPI application's database and configuration.
     source = Path("webui/backend/open_webui/utils/nexrag_privacy.py").read_text("utf8")
     names = {
         "private_workspace",

@@ -1,7 +1,7 @@
-"""将显式的业务交付物绑定到运营方的语义目录。
+"""Bind explicit business deliverables to the operator-owned semantic catalog.
 
-名称和别名由目录负责，而不是模型。这里刻意只做有边界的名称解析，不声称能理解所有自然语言查询；
-未知的改写说法仍沿用常规证据契约，需要靠评测覆盖。
+Names and aliases belong to the catalog, not the model. This bounded resolver leaves unknown
+paraphrases under the normal evidence contract; evaluation must cover those variants.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ def _named(text: str, name: str) -> bool:
 
 
 def catalog_requirements(prompt: str, definitions: dict, required: set[str]) -> set[str]:
-    """解析每个显式请求的指标；一个实体不能满足另一个实体的要求。"""
+    """Resolve each requested metric independently so one entity cannot satisfy another."""
     if "db" not in required:
         return set()
     text = unicodedata.normalize("NFKC", positive_request_text(prompt)).casefold()
@@ -36,8 +36,8 @@ def catalog_requirements(prompt: str, definitions: dict, required: set[str]) -> 
         )
     }
     obligations = {"metric:" + identifier for identifier in matched}
-    # 显式的关联请求需要一个经认证的连接结果，而不是两个互不相关的单视图查询。
-    # 表名只来自目录。
+    # Explicit joins require one certified joined result, not unrelated single-view queries.
+    # Only catalog names are authoritative.
     tables = {spec["table"] for spec in matched.values() if spec.get("table")}
     if (
         "db_details" in required
@@ -45,14 +45,14 @@ def catalog_requirements(prompt: str, definitions: dict, required: set[str]) -> 
         and any(word in text for word in ("关联", "联查", "join"))
     ):
         obligations.add("db_join:" + ",".join(sorted(tables)))
-        # 完整的关联明细必须包含已声明的指标输入，例如明细行旁的 orders.amount。
-        # 这里只校验结果，从不新增查询、改写投影或丢弃用户过滤条件。
+        # Complete joined details must include declared metric inputs alongside detail rows.
+        # Validate results without adding queries, rewriting projections, or dropping user filters.
         import sqlglot
         from sqlglot import exp
 
         for spec in matched.values():
             if spec.get("kind") == "count":
-                # 关联实体的键可以合法地从连接的任一侧投影，它不是金额明细字段。
+                # A joined entity key may come from either side; it is not an amount-detail field.
                 continue
             expression = sqlglot.parse_one(spec["calculation"], read="sqlite")
             obligations |= {
@@ -63,7 +63,7 @@ def catalog_requirements(prompt: str, definitions: dict, required: set[str]) -> 
 
 
 def bind_catalog_requirements(ledger, evaluation=None) -> None:
-    """在执行之前，使用与生产环境指标工具相同的目录。"""
+    """Bind requirements before execution using the production metric-tool catalog."""
     if "db" not in ledger.required:
         return
     if evaluation is not None:
@@ -82,7 +82,7 @@ def bind_catalog_requirements(ledger, evaluation=None) -> None:
 
 
 def completed_catalog_requirements(entries, required=()) -> set[str]:
-    """只有真实的类型化指标和经认证的连接才能满足目录义务。"""
+    """Accept only real typed metrics and certified joins as completed catalog obligations."""
     import sqlglot
     from sqlglot import exp
 
@@ -106,7 +106,7 @@ def completed_catalog_requirements(entries, required=()) -> set[str]:
         except (ValueError, sqlglot.errors.ParseError):
             continue
         tables = sorted({table.name for table in query.find_all(exp.Table)})
-        # 要求这些字段出现在同一个连接结果中；ledger 里无关的查询不能掩盖所选明细表的不完整。
+        # Require fields in the same joined result; unrelated ledger entries cannot repair incomplete details.
         fields = projected_detail_fields(query, entry["data"])
         field_requirements = {
             item.removeprefix("db_field:") for item in required if item.startswith("db_field:")
@@ -118,9 +118,10 @@ def completed_catalog_requirements(entries, required=()) -> set[str]:
 
 
 def projected_detail_fields(query, rows) -> set[str]:
-    """用 SQLGlot 解析直接选取的 SELECT 列，包括输出别名。
+    """Parse directly selected source columns and aliases with SQLGlot.
 
-    amount*0 之类的表达式和无关常量不能代替源列；有歧义的未限定列保持未认证。
+    Expressions such as amount*0 and unrelated constants cannot replace source columns;
+    ambiguous unqualified columns remain uncertified.
     """
     from sqlglot import exp
 

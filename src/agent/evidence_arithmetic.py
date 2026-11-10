@@ -1,7 +1,7 @@
-"""对本轮读取证据中引用的数值做本地 Decimal 运算。
+"""Perform local Decimal arithmetic over values quoted from this turn's evidence.
 
-模型只能选择操作数和白名单内的运算，不能执行代码、打开文件、发起 SQL，
-也不能凭空生成引用片段不支持的数值输入。这里证明的是算术与来源，而非业务含义或单位等价。
+The model selects operands and allowlisted operations, not code, files, SQL, or unsupported
+numeric inputs. This proves arithmetic and provenance, not semantics or unit compatibility.
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ Operation = Literal["add", "subtract", "multiply", "divide", "percentage", "perc
 
 
 class EvidenceOperand(BaseModel):
+    """A numeric operand bound to a specific evidence quote."""
+
     model_config = ConfigDict(extra="forbid")
     evidence_id: str = Field(min_length=1, max_length=32)
     excerpt: str = Field(min_length=1, max_length=400)
@@ -43,10 +45,10 @@ def _source_texts(entries, evidence_id: str) -> list[str]:
 
 
 def select_operand(entries, evidence_id: str, value: Decimal, excerpt: str = "") -> EvidenceOperand:
-    """解析一个真实出现的数值；重复的表示形式不会累加。
+    """Resolve a value actually present in evidence without summing repeated representations.
 
-    报告可能在正文和表格中重复同一个数字，运算只消费所选数值一次，而不是按出现次数计算。
-    显式给出 excerpt 可以选定特定上下文；两种方式都不认证业务含义或单位兼容性。
+    A report may repeat a number in text and tables; consume it once. An explicit excerpt can
+    select context, but neither selection mode certifies semantics or compatible units.
     """
     if not excerpt:
         matches = []
@@ -56,7 +58,7 @@ def select_operand(entries, evidence_id: str, value: Decimal, excerpt: str = "")
                     r"(?<![A-Za-z0-9_])(-?\d+(?:,\d{3})*(?:\.\d+)?)(万|亿)?", line
                 ):
                     if value in _numbers(match.group(0)):
-                        # 数值标记在来源引文中必须保持完整。
+                        # Numeric tokens must remain intact inside source quotations.
                         matches.append(line.strip() if len(line) <= 400 else match.group(0))
         if not matches:
             raise ValueError(
@@ -70,7 +72,7 @@ def select_operand(entries, evidence_id: str, value: Decimal, excerpt: str = "")
 
 def _operand(entries, operand: EvidenceOperand) -> dict:
     texts = _source_texts(entries, operand.evidence_id)
-    # 空白差异不改变引文；但每段 excerpt 仍须完整出现在单个返回文档内，不能跨拼接的多条命中。
+    # Whitespace may vary, but an excerpt must fit one returned document, not concatenated hits.
     excerpt = " ".join(operand.excerpt.split())
     if not any(excerpt in " ".join(text.split()) for text in texts):
         raise ValueError("Operand excerpt is absent from its cited read evidence")
@@ -82,17 +84,19 @@ def _operand(entries, operand: EvidenceOperand) -> dict:
 def calculate(
     entries, operation: Operation, left: EvidenceOperand, right: EvidenceOperand, precision: int = 2
 ) -> dict:
-    """先核实两端引文和数值，再做十进制定点运算；除零和非法精度直接拒绝。
+    """Verify both quotes and values before Decimal arithmetic; reject zero divisors and bad
+    precision.
 
-    同时保留原始结果、舍入显示值与中间量供回答校验；不推断单位或业务口径。
+    Retain raw results, rounded display values, and intermediates for output checks without
+    inferring units or business definitions.
     """
     if operation not in {"add", "subtract", "multiply", "divide", "percentage", "percent_change"}:
         raise ValueError("Unsupported arithmetic operation")
     if isinstance(precision, bool) or not 0 <= precision <= 8:
         raise ValueError("Rounding precision must be between zero and eight")
     operands = [_operand(entries, left), _operand(entries, right)]
-    a, b = left.value, right.value
-    if operation in {"divide", "percentage", "percent_change"} and b == 0:
+    left_value, right_value = left.value, right.value
+    if operation in {"divide", "percentage", "percent_change"} and right_value == 0:
         raise ValueError("Cannot divide by zero")
     with localcontext() as context:
         context.prec = 80
@@ -103,17 +107,20 @@ def calculate(
                 "subtract": operator.sub,
                 "multiply": operator.mul,
                 "divide": operator.truediv,
-            }[operation](a, b)
+            }[operation](left_value, right_value)
             symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}[operation]
-            formula = f"{a} {symbol} {b}"
+            formula = f"{left_value} {symbol} {right_value}"
         elif operation == "percentage":
-            result = a / b * 100
-            formula = f"({a} / {b}) * 100"
-            intermediates["ratio"] = str(a / b)
+            result = left_value / right_value * 100
+            formula = f"({left_value} / {right_value}) * 100"
+            intermediates["ratio"] = str(left_value / right_value)
         else:
-            result = (a - b) / b * 100
-            formula = f"(({a} - {b}) / {b}) * 100"
-            intermediates.update(difference=str(a - b), ratio=str((a - b) / b))
+            result = (left_value - right_value) / right_value * 100
+            formula = f"(({left_value} - {right_value}) / {right_value}) * 100"
+            intermediates.update(
+                difference=str(left_value - right_value),
+                ratio=str((left_value - right_value) / right_value),
+            )
         rounded = result.quantize(Decimal(1).scaleb(-precision), rounding=ROUND_HALF_UP)
         display_values = {
             f"dp_{places}": str(result.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP))
@@ -132,7 +139,7 @@ def calculate(
 
 
 def register_arithmetic_tool(agent) -> None:
-    """注册只消费当前证据账本的运算工具，将可修正的输入错误交回模型重试。"""
+    """Register ledger-bound arithmetic and return correctable input failures for model retries."""
 
     @agent.tool(strict=False)
     def calculate_evidence_arithmetic(
@@ -184,8 +191,8 @@ def register_arithmetic_tool(agent) -> None:
             raise ModelRetry(str(error)) from error
         evidence_id = ctx.deps.ledger.add("tool", result)
         ctx.deps.evidence_calls += 1
-        # 完整的 Decimal 精度/取整来源只存入 ledger，不放进模型上下文；
-        # 冗长的循环小数容易引发抄写错误，还会白白占用最终答案的预算。
+        # Keep full Decimal and rounding provenance in the ledger, not model context;
+        # long repeating decimals invite transcription errors and consume answer budget.
         return {
             "evidence_id": evidence_id,
             "operation": operation,

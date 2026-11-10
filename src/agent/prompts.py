@@ -1,7 +1,7 @@
-"""单一 NexRAG 分析 Agent 的指令。
+"""Instructions for the single NexRAG analysis agent.
 
-``SAFETY_PREFIX`` 不可变：自我演进循环永远不能把它当作优化目标读取或修改。
-``DEFAULT_GUIDANCE`` 是可演进的 ``prompt`` 制品的初始种子（见 ``src/evolution/artifacts.py``）。
+SAFETY_PREFIX is immutable and never an optimization target for evolution.
+DEFAULT_GUIDANCE seeds the evolvable prompt artifact in src/evolution/artifacts.py.
 """
 
 SAFETY_PREFIX = """You are NexRAG, an assistant for business analysis, document Q&A, and web-informed research.

@@ -1,4 +1,4 @@
-"""面向现有单 Agent 和授权路径的已注册指标工具。"""
+"""Registered metric tools using the existing agent and authorization path."""
 
 import asyncio
 import sqlite3
@@ -14,7 +14,7 @@ from src.midplatform.metric_query import MetricFilter, execute_metric_group, met
 
 
 def register_metric_tools(agent):
-    """注册按目录 ID 查询的指标工具，统一复用当前授权与业务快照。"""
+    """Register catalog-ID metric queries over the current authorized business snapshot."""
 
     @agent.tool(strict=False)
     async def query_business_metrics(
@@ -30,7 +30,7 @@ def register_metric_tools(agent):
 
 
 def _resolve_metric_source(deps, session):
-    """取得指标查询所用的只读适配器与指标定义（评测运行优先，否则读取当前连接的元数据）。"""
+    """Resolve a read-only adapter and metrics, preferring evaluation data over active metadata."""
     evaluation = deps.evaluation
     if evaluation is not None:
         adapter = evaluation.business_adapter
@@ -49,7 +49,7 @@ def _resolve_metric_source(deps, session):
 
 
 def _common_filter_fields(adapter, definitions, metric_ids):
-    """所请求指标所在业务视图的公共字段；任一视图不在适配器中时返回空集合。"""
+    """Return fields common to all requested metric views, or an empty set if any view is absent."""
     tables = {definitions[name].get("table") for name in metric_ids}
     if not tables or not tables <= set(adapter.profile.views):
         return set()
@@ -63,7 +63,7 @@ def _common_filter_fields(adapter, definitions, metric_ids):
 
 
 async def _run_metric_queries(deps, session, adapter, queries, conditions):
-    """逐组执行指标查询：每组前重新授权，并把查询与指标值记入证据台账。"""
+    """Reauthorize each metric group and record its SQL and values in the evidence ledger."""
     metrics, evidence_ids = [], []
     for measures, sql in queries:
         require_business(deps.context, deps.evaluation)
@@ -92,7 +92,7 @@ async def _run_metric_queries(deps, session, adapter, queries, conditions):
 
 
 def _metric_response(deps, session, metrics, evidence_ids):
-    """组装返回给 Agent 的指标结果及后续动作提示。"""
+    """Build metric-tool results and follow-up guidance."""
     return {
         "metrics": metrics,
         "metric_query_evidence_ids": evidence_ids,
@@ -110,7 +110,7 @@ def _metric_response(deps, session, metrics, evidence_ids):
 
 
 async def execute_business_metrics(deps, metric_ids, filters=None):
-    """供 Agent 调用和已绑定的目录义务共用的、带授权的执行器。"""
+    """Execute authorized metrics for both agent calls and bound catalog obligations."""
     try:
         require_business(deps.context, deps.evaluation)
         session = current_business_session()

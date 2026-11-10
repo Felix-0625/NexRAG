@@ -1,4 +1,4 @@
-"""管理员维护业务租户及账号授权。"""
+"""Administrator-maintained business tenants and account grants."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -11,24 +11,28 @@ router = APIRouter(prefix="/ops/tenants", tags=["ops"])
 
 
 class TenantBody(BaseModel):
+    """Business-tenant identity and display metadata."""
+
     tenant_id: str = Field(min_length=1, max_length=128)
     label: str = Field(min_length=1, max_length=200)
 
 
 class GrantBody(BaseModel):
+    """Account email receiving or losing tenant access."""
+
     email: str = Field(min_length=3, max_length=320)
     tenant_id: str = Field(min_length=1, max_length=128)
 
 
 @router.get("")
 def list_all_tenants(_: Principal = Depends(require_admin)):
-    """返回完整租户目录及每位用户当前的授权，供账户页使用。"""
+    """Return the full tenant catalog and current grants for account management."""
     return {"tenants": tenant_access.list_tenants(), "grants": tenant_access.list_grants()}
 
 
 @router.post("")
 def create_tenant(body: TenantBody, _: Principal = Depends(require_admin)):
-    """管理员新增一个业务租户；ID 已存在返回 409。"""
+    """Create a business tenant, returning 409 for duplicate IDs."""
     try:
         tenant_access.create_tenant(body.tenant_id, body.label)
     except ValueError as exc:
@@ -38,14 +42,14 @@ def create_tenant(body: TenantBody, _: Principal = Depends(require_admin)):
 
 @router.delete("/{tenant_id}")
 def delete_tenant(tenant_id: str, _: Principal = Depends(require_admin)):
-    """管理员删除一个业务租户，并同时清除所有账号对它的授权。"""
+    """Delete a tenant and all account grants to it atomically."""
     tenant_access.delete_tenant(tenant_id)
     return {"ok": True}
 
 
 @router.post("/grant")
 def grant_tenant(body: GrantBody, admin: Principal = Depends(require_admin)):
-    """管理员授予某邮箱访问指定业务租户的权限，并记录授权人；租户不存在返回 400。"""
+    """Grant tenant access to an email and record the actor; reject unknown tenants with 400."""
     try:
         tenant_access.set_grant(body.email, body.tenant_id, True, admin.email)
     except ValueError as exc:
@@ -55,6 +59,6 @@ def grant_tenant(body: GrantBody, admin: Principal = Depends(require_admin)):
 
 @router.post("/revoke")
 def revoke_tenant(body: GrantBody, _: Principal = Depends(require_admin)):
-    """管理员撤销某邮箱对指定业务租户的访问权限。"""
+    """Revoke the specified account's access to a business tenant."""
     tenant_access.set_grant(body.email, body.tenant_id, False, "")
     return {"ok": True}

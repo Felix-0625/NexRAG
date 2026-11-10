@@ -1,4 +1,4 @@
-"""智能体生成的导出文件：沙箱、格式、按用户隔离以及 API。"""
+"""Agent exports: sandboxing, formats, user isolation, and HTTP access."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ SECRET = "a" * 32
 
 @pytest.fixture
 def exports_dir(tmp_path, monkeypatch):
+    """Provide exports dir test data or behavior for this scenario."""
     monkeypatch.setattr(settings, "EXPORTS_DIR", str(tmp_path))
     return tmp_path
 
@@ -97,8 +98,8 @@ def test_user_and_chat_symlinks_cannot_escape_owner(exports_dir, tmp_path):
     except OSError:
         if os.name != "nt":
             raise
-        # 用 NTFS 联接点复现同样的已解析路径逃逸，
-        # 既不需要开发者模式，也不必给测试运行器授予额外权限。
+        # Use an NTFS junction to reproduce resolved-path escape
+        # without developer mode or extra test-runner privileges.
         subprocess.run(
             [
                 "powershell.exe",
@@ -115,8 +116,8 @@ def test_user_and_chat_symlinks_cannot_escape_owner(exports_dir, tmp_path):
             check=True,
             capture_output=True,
         )
-    # 测试根目录包含 outside，所以归属隔离必须拒绝这类链接，
-    # 即使它们解析到全局根目录内另一位用户的文件夹。
+    # The global test root contains outside, so ownership must reject links
+    # even when they resolve into another user's directory inside that root.
     (outside / "private.txt").write_text("other account", encoding="utf8")
     with pytest.raises(ExportSecurityError):
         export_analysis(user_id="alice", chat_id="chat", title="x", text="bad")
@@ -140,6 +141,7 @@ def test_list_exports_is_scoped_per_user_and_chat(exports_dir):
 
 
 def headers(role="user"):
+    """Build signed request headers for the test identity."""
     claims = {
         "sub": "alice",
         "email": "alice@example.local",
@@ -156,6 +158,7 @@ def headers(role="user"):
 
 @pytest.fixture
 def client(monkeypatch):
+    """Provide an isolated HTTP client for the test application."""
     monkeypatch.setattr(settings, "NEXRAG_SHARED_API_KEY", KEY)
     monkeypatch.setattr(settings, "NEXRAG_USER_JWT_SECRET", SECRET)
     return TestClient(app)

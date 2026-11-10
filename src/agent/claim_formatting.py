@@ -1,11 +1,11 @@
-"""识别展示层语法，但不放过缺乏依据的业务数值。"""
+"""Recognize presentation syntax without exempting unsupported business values."""
 
 import re
 from decimal import Decimal
 
 
 def prompt_reference_text(prompt: str) -> str:
-    """展示精度不是用户提供的业务数量。"""
+    """Exclude display precision from user-provided business quantities."""
     text = re.sub(r"\b(?:to|with)\s+\d+\s+decimal\s+places?\b", "", prompt, flags=re.I)
     return re.sub(r"(?:保留|四舍五入(?:至|到)?)\s*\d+\s*位小数", "", text)
 
@@ -18,7 +18,7 @@ _SYMBOLIC_DISCOUNT = re.compile(
 
 
 def _verified_symbolic_formula(match, quotes):
-    """将展示的简写费率/结果绑定到服务器实际的报价。"""
+    """Bind displayed shorthand rates and results to the server's actual quote."""
     rate, divisor, result = match.groups()
     return Decimal(divisor) == 100 and any(
         quote.get("binding", {}).get("formula") == "amount * discount_percent / 100"
@@ -35,7 +35,7 @@ def _verified_symbolic_formula(match, quotes):
 
 
 def discount_formula_issues(text: str, quotes) -> list[str]:
-    """校验展示的受支持公式语法，即使其中每个数字都是已知的。"""
+    """Validate supported displayed formulas even when every number is already known."""
     if not quotes:
         return []
     for match in _SYMBOLIC_DISCOUNT.finditer(text):
@@ -62,20 +62,21 @@ def discount_formula_issues(text: str, quotes) -> list[str]:
 
 
 def is_post_discount_total(text: str, start: int) -> bool:
-    """折后金额的标签不能被误认为源数据库的合计。"""
+    """Distinguish a discounted-total label from the source database total."""
     prefix = text[max(0, start - 24) : start]
     return bool(re.search(r"(?:折后|优惠后|折扣后)[^\n。；;，,:：]{0,12}$", prefix))
 
 
 def normalize_verified_formulas(text: str, quotes) -> str:
-    """仅在完全经过验证的折扣等式中，把 100 视为除数。
+    """Treat 100 as a divisor only inside fully verified discount equations.
 
-    这刻意不是数值白名单：单独出现的 100 元费用、错误的费率或带有编造结果的公式都保持原样，
-    交给常规数值检查拒绝。
+    This is not a numeric allowlist: standalone fees, wrong rates, and fabricated formula
+    results
+    remain unchanged for normal numeric validation to reject.
     """
     if not quotes:
         return text
-    # 经验证的简写（如 amount * 6 / 100）与工具的符号公式含义相同，只有其除数属于展示语法。
+    # Verified shorthand such as amount * 6 / 100 exempts only its presentation divisor.
     text = _SYMBOLIC_DISCOUNT.sub(
         lambda match: (
             f"amount × {match[1]}%" if _verified_symbolic_formula(match, quotes) else match[0]
@@ -90,6 +91,7 @@ def normalize_verified_formulas(text: str, quotes) -> str:
     )
 
     def replace(match):
+        """Normalize only the matched verified expression."""
         base, rate, discount = (Decimal(value.replace(",", "")) for value in match.groups())
         for quote in quotes:
             data = quote["data"]
@@ -105,11 +107,12 @@ def normalize_verified_formulas(text: str, quotes) -> str:
 
 
 def normalize_arithmetic_presentation(text: str, entries, *, mask_formulas: bool = False) -> str:
-    """仅在绑定来源的公式内部允许百分比缩放常数。
+    """Allow percentage scaling constants only inside source-bound formulas.
 
-    单独出现的 100 元费用仍视为事实声明；Unicode 金额负号只在计算器确实得到负结果时才做归一化。
+    A standalone fee of 100 remains factual; normalize Unicode amount signs only when the
+    calculator actually produced a negative result.
     """
-    # 转换仅用于显示的 LaTeX 写法；每个数值标记仍受下面同样的来源和算术检查约束。
+    # Display-only LaTeX normalization does not bypass source or arithmetic checks.
     text = re.sub(r"\\text\{([^{}]*)\}", r"\1", text)
     text = text.replace(r"\left", "").replace(r"\right", "").replace(r"\times", "×")
     text = re.sub(
@@ -128,21 +131,21 @@ def normalize_arithmetic_presentation(text: str, entries, *, mask_formulas: bool
 
     text = normalize_numeric_formulas(text, calculations, mask=mask_formulas)
     if any(c["operation"] in {"percentage", "percent_change"} for c in calculations):
-        # 仅含变量的公式不引入数值操作数；单独的费用或含新数值的公式仍会被检查。
+        # Symbolic formulas add no numeric operands; standalone fees and new numbers remain checked.
         symbolic = re.compile(
             r"[^\W\d_](?:[^\W\d_]|[\d _()−-]){1,80}\s*(?:/|÷)\s*"
             r"[^\W\d_](?:[^\W\d_]|[\d _()]){1,80}\s*[\]\)]*\s*(?:×|\*|x)\s*100(?!\w|\.\d)"
         )
         text = symbolic.sub(
-            # 标签中可能含年份（如 "payment due in 2018"）；保留所有标签数字供常规 grounding 检查，只豁免缩放常数。
+            # Keep years inside labels subject to grounding; exempt only the scaling constant.
             lambda m: re.sub(r"(?:×|\*|x)\s*100$", "scaling" if mask_formulas else "%", m[0]),
             text,
         )
     for calculation in calculations:
         value = Decimal(calculation["result"])
         if value < 0:
-            # "decreased by $N" 是实际负结果的绝对值，不是缺乏依据的正数金额。
-            # 成员检查时保留符号；绝不把 +N 当作独立事实加入白名单。
+            # 'Decreased by $N' describes the absolute value of a real negative result.
+            # Preserve the sign in membership checks; never allowlist +N as a separate fact.
             decrease = re.compile(
                 r"(?:\b(?:decrease|decline|reduction|drop)(?:d)?\s+(?:of|by)\s*|(?:减少|下降|降低)(?:了|为)?)"
                 r"[$€£]?\s*(\d+(?:,\d{3})*(?:\.\d+)?)(?![\d.])",

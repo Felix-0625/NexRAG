@@ -1,7 +1,7 @@
-"""在 Agent 无法给出有依据的答案时，呈现已收集的证据。
+"""Present collected evidence when the agent cannot produce a grounded answer.
 
-这里只负责格式化；授权、证据完整性和数值校验仍留在 ledger 与工具适配层。
-不会调用模型或外部服务。
+Formatting only: authorization, completeness, and numeric checks remain in the ledger and
+tool adapters. This module calls neither models nor external services.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.agent.grounding import EvidenceLedger
 
-# 渲染顺序：数据库 → 知识库 → 其他工具 → 导出链接。
+# Keep database, knowledge, other tools, and export links in stable display order.
 _KIND_ORDER = {"db": 0, "kb": 1, "export": 3}
 
 MISSING_LABELS = {
@@ -29,13 +29,13 @@ MISSING_LABELS = {
 
 
 def _escape(value) -> str:
-    """转义 Markdown 表格单元格：竖线和换行会破坏表格结构。"""
+    """Escape Markdown cells so pipes and newlines cannot corrupt table structure."""
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
 def _db_sections(entry, ledger, seen_queries: set) -> list[str]:
-    """渲染一次已核验的数据库查询：SQL、结果表，以及可无歧义得出的计数与合计。"""
-    # 仅在渲染时导入；证据 ledger 类型归 grounding 所有。
+    """Render a verified query with SQL, rows, and unambiguous counts and totals."""
+    # Import at render time because grounding owns the ledger types.
     from src.agent.grounding import EvidenceLedger
 
     rows = entry["data"]
@@ -72,7 +72,7 @@ def _db_sections(entry, ledger, seen_queries: set) -> list[str]:
 
 
 def _kb_sections(entry, seen_documents: set) -> list[str]:
-    """渲染一次知识检索；无结果时区分"已展示或超预算"与"确实没找到"。"""
+    """Render retrieval while distinguishing already-shown or over-budget results from no matches."""
     if not entry["data"]:
         if entry.get("omitted_count"):
             return [
@@ -95,7 +95,7 @@ def _kb_sections(entry, seen_documents: set) -> list[str]:
 
 
 def render_safe_answer(ledger: EvidenceLedger) -> str:
-    """渲染实际证据，而不是让模型编造修补内容。"""
+    """Render actual evidence rather than asking the model to invent repairs."""
     sections = ["以下内容由本轮实际工具结果生成。"]
     seen_documents: set = set()
     seen_queries: set = set()

@@ -1,1 +1,1 @@
-"""面向 Open WebUI 集成的 OpenAI 兼容 HTTP 路由与请求模型。"""
+"""OpenAI-compatible HTTP routes and request models for Open WebUI integration."""

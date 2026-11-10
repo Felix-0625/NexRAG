@@ -1,7 +1,7 @@
-"""可写的运维数据域：trace、分数、数据集、记忆与产物。
+"""Writable operations data for traces, scores, datasets, memory, and artifacts.
 
-业务数据留在只读的租户快照适配器中。运维记录存放在单独的 SQLite 文件
-（``settings.OPS_DB_PATH``）里，Agent 的 SQL 工具永远访问不到，只有服务端代码读写。
+Business data stays in tenant read-only adapters. A separate OPS_DB_PATH SQLite file is
+accessible only to server code, never the agent's SQL tool.
 """
 
 from __future__ import annotations
@@ -100,22 +100,22 @@ CREATE TABLE IF NOT EXISTS business_connections (
 
 
 def new_id() -> str:
-    """为运维记录返回一个随机标识符。"""
+    """Return a random operations-record ID."""
     return uuid.uuid4().hex
 
 
 def now() -> float:
-    """返回当前挂钟时间（epoch 秒）。"""
+    """Return current epoch seconds."""
     return time.time()
 
 
 def dumps(value: Any) -> str:
-    """序列化 JSON 列的值。"""
+    """Serialize a JSON-column value."""
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
 class OpsStore:
-    """运维数据域的线程安全 SQLite 仓库。"""
+    """Thread-safe SQLite operations repository."""
 
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path or settings.OPS_DB_PATH)
@@ -131,7 +131,7 @@ class OpsStore:
 
     @contextmanager
     def transaction(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
-        """原子地执行多条语句。读后写用 immediate 提前取得 SQLite 写锁。"""
+        """Run statements atomically, using immediate to lock before read-then-write work."""
         with self._lock:
             conn = self._conn
             nested = conn.in_transaction
@@ -154,22 +154,22 @@ class OpsStore:
                 raise
 
     def execute(self, sql: str, params: tuple | dict = ()) -> None:
-        """在独立事务中执行一条写语句。"""
+        """Execute one write in its own transaction."""
         with self.transaction() as conn:
             conn.execute(sql, params)
 
     def query(self, sql: str, params: tuple | dict = ()) -> list[dict[str, Any]]:
-        """以字典列表形式返回读查询的所有行。"""
+        """Return read-query rows as dictionaries."""
         with self._lock:
             return [dict(row) for row in self._conn.execute(sql, params).fetchall()]
 
     def query_one(self, sql: str, params: tuple | dict = ()) -> dict[str, Any] | None:
-        """返回读查询的第一行；没有则返回 ``None``。"""
+        """Return the first row, or None."""
         rows = self.query(sql, params)
         return rows[0] if rows else None
 
     def close(self) -> None:
-        """关闭底层连接。"""
+        """Close the connection."""
         with self._lock:
             self._conn.close()
 
@@ -179,7 +179,7 @@ _store_lock = threading.Lock()
 
 
 def get_ops_store() -> OpsStore:
-    """返回进程级的运维 store，惰性创建。"""
+    """Lazily return the process-wide operations store."""
     global _store
     with _store_lock:
         if _store is None:
@@ -188,7 +188,7 @@ def get_ops_store() -> OpsStore:
 
 
 def set_ops_store(store: OpsStore | None) -> None:
-    """替换进程级 store（供测试和脚本使用）。"""
+    """Replace the process-wide store for tests and scripts."""
     global _store
     with _store_lock:
         _store = store

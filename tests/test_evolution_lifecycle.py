@@ -1,4 +1,4 @@
-"""提案生命周期、待办治理、金丝雀路由、晋升与回滚。"""
+"""Proposal lifecycle, backlog, canary routing, promotion, and rollback."""
 
 from __future__ import annotations
 
@@ -14,15 +14,18 @@ DAY = 86_400
 
 @pytest.fixture
 def reg(isolated_ops):
+    """Provide reg test data or behavior for this scenario."""
     return ArtifactRegistry(isolated_ops)
 
 
 @pytest.fixture
 def gov(isolated_ops, reg):
+    """Provide gov test data or behavior for this scenario."""
     return Governance(isolated_ops, reg)
 
 
 def submit(gov, reg, *, kind="params", cluster="tool_failure:query_database", value=3):
+    """Provide submit test data or behavior for this scenario."""
     baseline = reg.production(kind)
     content = (
         {**baseline.content, "prune_max_tables": value} if kind == "params" else "new guidance"
@@ -111,7 +114,7 @@ def test_approve_canary_promote_then_rollback(gov, reg, isolated_ops, monkeypatc
     (proposal_id, _), candidate = submit(gov, reg)
     gov.approve(proposal_id, "admin@example.local", "looks right")
     assert reg.by_label("params", "staging").id == candidate.id
-    assert reg.production("params").id == original.id  # 仅有批准不会触发晋升
+    assert reg.production("params").id == original.id  # Approval alone must not promote.
 
     with pytest.raises(GovernanceError, match="Canary has run"):
         gov.promote(proposal_id, "admin@example.local")
@@ -172,6 +175,7 @@ def test_approval_rolls_back_if_staging_label_fails(gov, reg, monkeypatch):
     (proposal_id, _), _ = submit(gov, reg)
 
     def fail(*_args):
+        """Provide fail test data or behavior for this scenario."""
         raise ValueError("staging write failed")
 
     monkeypatch.setattr(reg, "set_label", fail)
@@ -189,7 +193,7 @@ def test_canary_cannot_promote_with_no_real_samples_or_forged_summary(gov, reg, 
         "UPDATE proposals SET canary_started_at=canary_started_at-? WHERE id=?",
         ((settings.CANARY_MIN_DAYS + 1) * DAY, proposal_id),
     )
-    with pytest.raises(TypeError):  # 调用方不能传入伪造的灰度摘要
+    with pytest.raises(TypeError):  # Callers cannot supply fabricated canary summaries.
         gov.promote(proposal_id, "admin@example.local", canary_metrics={"canary_traces": 1000})
     with pytest.raises(GovernanceError, match="20 candidate"):
         gov.promote(proposal_id, "admin@example.local")

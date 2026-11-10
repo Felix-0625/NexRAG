@@ -1,4 +1,4 @@
-"""区分显式限定条数的明细样本与完整的业务结果。"""
+"""Separate explicitly bounded detail samples from complete business results."""
 
 import re
 import unicodedata
@@ -11,7 +11,7 @@ from src.midplatform.query_semantics import evidence_shape
 
 
 def requested_detail_limit(prompt: str) -> int | None:
-    """只识别现有的显式中文行数写法，不识别任意数字。"""
+    """Recognize supported explicit Chinese row-limit syntax, not arbitrary numbers."""
     text = unicodedata.normalize("NFKC", positive_request_text(prompt))
     if re.search(
         r"全部|所有|全量|完整|最多|至多|不超过|排名|排序|最高|最低|最大|最小|最新|最早|升序|降序|从高到低|从低到高",
@@ -29,7 +29,7 @@ def requested_detail_limit(prompt: str) -> int | None:
 
 
 def completes_detail_request(entry: dict, prompt: str) -> bool:
-    """带 LIMIT 的 SELECT 只能证明所请求的样本，绝不能代表聚合结果。"""
+    """A limited SELECT proves only the requested sample, never an aggregate result."""
     shape = evidence_shape(entry)
     if not shape.get("row_preserving"):
         return False
@@ -59,7 +59,7 @@ def completes_detail_request(entry: dict, prompt: str) -> bool:
         if not isinstance(column, exp.Column) or column.is_star:
             return False
         columns[column.name.casefold()] = projection.alias_or_name
-    # 保留显式点名的源标识符（如 order_id），包括结果中的别名；常量/表达式不能冒充该列。
+    # Require explicitly named source identifiers or their aliases; constants cannot impersonate them.
     text = unicodedata.normalize("NFKC", positive_request_text(prompt)).casefold()
     named = set(re.findall(r"\b[a-z][a-z0-9]*_[a-z0-9_]+\b", text))
     named -= {table.name.casefold() for table in tables}
@@ -77,7 +77,9 @@ def completes_detail_request(entry: dict, prompt: str) -> bool:
 
 
 def bounded_detail_only_ready(ledger) -> bool:
-    """仅需数据库明细且请求了条数上限的任务，在已有查询结果满足该明细要求时返回 True。"""
+    """Check whether existing evidence satisfies a database-detail-only request with an explicit
+    limit.
+    """
     return (
         ledger.required == {"db", "db_details"}
         and requested_detail_limit(ledger.prompt) is not None

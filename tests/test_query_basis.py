@@ -1,4 +1,4 @@
-"""基于请求的谓词取值，是对 SQL 授权与粒度检查的补充。"""
+"""Request-grounded predicates supplement SQL authorization and grain validation."""
 
 import asyncio
 from types import SimpleNamespace

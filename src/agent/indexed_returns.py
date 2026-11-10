@@ -1,6 +1,7 @@
-"""从已授权文本中解析显式的归一化投资比较。
+"""Parse explicit normalized-investment comparisons from authorized text.
 
-这个有边界的读取器要求文中写明共同的初始投资以及带标签的年份列；不会推断基准值、实体同义词或缺失的单位。
+Require a stated common initial investment and labeled year columns. Do not infer bases,
+entity synonyms, or missing units.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from src.agent.source_facts import YEAR, _unit, source_facts
 
 
 class ComparisonRequest(BaseModel):
+    """Explicit series, years, and direction for an investment comparison."""
+
     model_config = ConfigDict(frozen=True)
     left: str
     right: str
@@ -26,7 +29,7 @@ def _label(value: str) -> str:
 
 
 def requested_comparison(prompt: str) -> ComparisonRequest | None:
-    """只识别以百分点表示的显式收益率差。"""
+    """Recognize only explicit return differences expressed in percentage points."""
     if not (
         re.search(r"return|收益", prompt, re.I)
         and re.search(r"percentage\s+points?|百分点", prompt, re.I)
@@ -56,8 +59,8 @@ def requested_comparison(prompt: str) -> ComparisonRequest | None:
 
 def _baselines(text: str):
     for line in text.splitlines():
-        # 将该假设限定在同一张表的股票与每个指数上。
-        # 被否定的假设不能作为基准的凭证；保守地整句拒绝，而不去解释语义上的例外。
+        # The assumption must apply to the stock and every index in the same table.
+        # A negated assumption cannot prove the base; reject the clause rather than guess exceptions.
         if re.search(r"\bnot\b|\bnever\b|n't\b|并非|不假设|不采用", line, re.I):
             continue
         if not (
@@ -79,7 +82,9 @@ def _baselines(text: str):
 
 
 def prepare_comparison(prompt: str, entries) -> dict | None:
-    """从知识库证据中绑定共同初始投资与两个指数的期末值，返回预备工具参数；非比较请求返回 None，来源冲突或有歧义时抛出 ValueError。"""
+    """Bind a common base and two terminal values from knowledge evidence; reject ambiguity or
+    conflicts.
+    """
     request = requested_comparison(prompt)
     if request is None:
         return None
@@ -151,7 +156,7 @@ def prepare_comparison(prompt: str, entries) -> dict | None:
 
 
 def verified_comparisons(entries, prompt: str) -> list[dict]:
-    """筛出与当前请求及本轮知识库来源绑定一致、以百分点为单位的指数收益差计算条目。"""
+    """Select request- and source-bound indexed-return differences measured in percentage points."""
     try:
         request = requested_comparison(prompt)
     except ValueError:
@@ -174,7 +179,9 @@ def verified_comparisons(entries, prompt: str) -> list[dict]:
 
 
 def completed_comparisons(ledger) -> list[dict]:
-    """仅当任务只需知识库检索加指数收益差时，返回已验证的比较结果；否则返回空列表。"""
+    """Return verified comparisons only for knowledge-plus-indexed-return tasks, otherwise no
+    results.
+    """
     if ledger.required != {"kb", "arithmetic:indexed_return_difference"}:
         return []
     return verified_comparisons(ledger.entries, ledger.prompt)

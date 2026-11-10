@@ -1,4 +1,4 @@
-"""公开调研不得被误路由到被禁止的内部数据工具。"""
+"""Public research must not be routed to forbidden internal tools."""
 
 import asyncio
 from types import SimpleNamespace

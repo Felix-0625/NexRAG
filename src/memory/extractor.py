@@ -1,7 +1,7 @@
-"""仅从用户自己的话语中提取记忆候选。
+"""Extract memory only from the user's own words.
 
-工具输出、检索文档、网页和文件都不是记忆来源，以防通过注入内容污染记忆
-（MINJA 类攻击）。疑似对模型下指令的文本会被丢弃，入库前先对 PII 脱敏。
+Exclude tools, documents, web pages, and files to prevent injection-based poisoning.
+Discard suspected model instructions and redact PII before storage.
 """
 
 from __future__ import annotations
@@ -28,6 +28,8 @@ MAX_CANDIDATES = 5
 
 
 class ExtractedItem(BaseModel):
+    """Schema-constrained candidate extracted from user-authored text."""
+
     scope: str = Field(
         description="global for stable preferences/profile; tenant for business facts; session for task state"
     )
@@ -41,6 +43,8 @@ class ExtractedItem(BaseModel):
 
 
 class Extraction(BaseModel):
+    """Validated collection of extracted memory candidates."""
+
     items: list[ExtractedItem] = Field(default_factory=list)
 
 
@@ -59,7 +63,7 @@ Completer = Callable[[str, str], Awaitable[str]]
 
 
 def looks_like_injection(text: str) -> bool:
-    """文本含疑似对模型下指令或越狱的措辞时返回 True，此类文本不会被提取为记忆。"""
+    """Detect suspected instructions or jailbreak text that must not become memory."""
     return bool(_INJECTION.search(text or ""))
 
 
@@ -81,13 +85,13 @@ async def extract_candidates(
     has_tenant: bool = True,
     has_session: bool = True,
 ) -> list[MemoryCandidate]:
-    """将一条用户话语转换为经校验、已脱敏的记忆候选。"""
+    """Convert one user utterance into validated, redacted memory candidates."""
     text = (user_message or "").strip()
     if len(text) < 4 or looks_like_injection(text):
         return []
     try:
         raw = await completer(EXTRACTION_PROMPT, redact(text)[:2_000])
-    except Exception:  # noqa: BLE001 - 提取是尽力而为
+    except Exception:  # noqa: BLE001 - Extraction is best effort.
         log.warning("Memory extraction call failed", exc_info=True)
         return []
 

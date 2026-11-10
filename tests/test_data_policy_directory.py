@@ -1,4 +1,4 @@
-"""默认拒绝披露与显式的组织授权相互独立。"""
+"""Default-deny disclosure is independent of explicit organization grants."""
 
 import asyncio
 from types import SimpleNamespace
@@ -12,10 +12,12 @@ from src.midplatform.tenant_access import Principal, allowed_tenants, create_ten
 
 
 def model(identifier="local", provider="ollama", url="http://127.0.0.1:11434/v1", name="qwen3:4b"):
+    """Provide deterministic model responses for this scenario."""
     return dict(id=identifier, provider=provider, base_url=url, model_name=name)
 
 
 def assignment(user_id, email, **changes):
+    """Provide assignment test data or behavior for this scenario."""
     return dict(
         user_id=user_id,
         email=email,
@@ -118,6 +120,7 @@ def test_live_revocation_aborts_existing_context(monkeypatch):
     )
 
     async def respond(request):
+        """Return a deterministic mocked HTTP response."""
         return httpx.Response(
             200,
             json={

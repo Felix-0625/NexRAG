@@ -1,4 +1,4 @@
-"""独立于模型所选措辞，渲染受信任的指标值。"""
+"""Render trusted metric values independently of model-selected wording."""
 
 from dataclasses import replace
 from decimal import Decimal
@@ -17,7 +17,7 @@ class BusinessReport(BaseModel):
 
 
 def business_report_ready(ledger):
-    """所有已绑定的交付物（包括导出/计算）都必须有依据。"""
+    """Require evidence for every bound deliverable, including exports and calculations."""
     from src.agent.derived_calculation import validated_quotes
     from src.agent.detail_contract import bounded_detail_only_ready
     from src.agent.indexed_returns import completed_comparisons
@@ -34,14 +34,14 @@ def business_report_ready(ledger):
 
 
 async def prepare_business_output(ctx, definitions):
-    """仅在目录指标值真实存在之后，才暴露结构化报告。"""
+    """Expose structured reporting only once catalog metric values actually exist."""
     return definitions if business_report_ready(ctx.deps.ledger) else []
 
 
 def _export_phase_tools(ledger, definitions):
-    """文档报告阶段的可用工具：先检索，再进行显式授权的写入。"""
-    # 文档报告需要先检索，再进行显式授权的写入。
-    # 导出参数校验失败时，不能重新放开记忆或文件系统读取。
+    """Allow retrieval before explicitly authorized writes in the document-report phase."""
+    # Document reports require retrieval before explicitly authorized writes.
+    # Export validation failures must not reopen memory or filesystem access.
     has_documents = any(entry["kind"] == "kb" and entry["data"] for entry in ledger.entries)
     allowed = {"export_analysis"} if has_documents else {"search_knowledge_documents"}
     if not ledger.missing():
@@ -50,7 +50,7 @@ def _export_phase_tools(ledger, definitions):
 
 
 def _indexed_return_allowed(ledger):
-    """指数化收益差任务的可用工具名：证据齐备后只放开计算，计算完成后不再开放。"""
+    """Allow only computation once comparison evidence is ready, then close that phase."""
     from src.agent.indexed_returns import prepare_comparison
 
     try:
@@ -63,7 +63,7 @@ def _indexed_return_allowed(ledger):
 
 
 def _percent_change_override(ledger):
-    """期间百分比变化任务：来源事实足够时返回收窄后的工具名集合，否则返回 None。"""
+    """Narrow period-change tools when source facts suffice; otherwise return None."""
     from src.agent.source_facts import period_calculation_inputs
 
     try:
@@ -72,14 +72,14 @@ def _percent_change_override(ledger):
         return None
     if ready is None:
         return None
-    # 收集 -> 计算 -> 回答：参数出错后的重试不能重新打开已经足够的知识库检索。
+    # Retries must not reopen sufficient knowledge retrieval after entering calculation.
     return {"calculate_evidence_arithmetic"} if ledger.missing() else set()
 
 
 def _knowledge_only_allowed(ledger):
-    """显式纯文档任务的可用工具名集合。"""
-    # 显式的纯文档任务只有一种收集能力。
-    # 查询构造和答案生成仍由 Agent 负责，不暴露无关的 schema、文件系统或外部工具。
+    """Return the allowed tools for an explicit document-only task."""
+    # Explicit document-only tasks need just one collection capability.
+    # Keep unrelated schemas, files, and external tools hidden while the agent builds queries and answers.
     allowed = {"search_knowledge_documents"}
     if any(e["kind"] == "kb" and e["data"] for e in ledger.entries):
         allowed.add("calculate_evidence_arithmetic")
@@ -93,10 +93,10 @@ def _knowledge_only_allowed(ledger):
 
 
 async def prepare_business_tools(ctx, definitions):
-    """类型化报告就绪后直接收尾，不再重新打开数据收集。
+    """Finalize typed reports without reopening evidence collection.
 
-    使用 PydanticAI 支持的逐步工具准备机制，对不强制指定 tool_choice 的 Ollama 同样有效；
-    最终输出仍由模型产出，常规的授权和报告校验器照常运行。
+    Use PydanticAI's per-step preparation so this also works with Ollama without forced
+    tool_choice; model output still passes normal authorization and report validators.
     """
     from src.agent.task_intent import knowledge_only_request, prohibited_tools
 
@@ -124,8 +124,8 @@ async def prepare_business_tools(ctx, definitions):
     ledger = ctx.deps.ledger
     missing = ledger.missing()
     if CALCULATION in missing and not (missing - {CALCULATION, "export"}):
-        # 仅当现有证据充分且无歧义时才进入计算阶段。
-        # 实际工具仍会重新授权、计算并记录来源；这里的就绪检查并不代表任务完成。
+        # Enter calculation only with sufficient unambiguous evidence.
+        # Readiness is not completion: tools still reauthorize, calculate, and record provenance.
         try:
             quote_from_evidence(ledger.entries, ledger.prompt)
         except ValueError:
@@ -138,7 +138,7 @@ async def prepare_business_tools(ctx, definitions):
 
 
 def normalize_report_mode(request_context):
-    """可选的输出工具被隐藏时，让普通聊天保持文本模式。"""
+    """Keep ordinary chat in text mode when optional output tools are hidden."""
     params = request_context.model_request_parameters
     if not params.output_tools and params.allow_text_output:
         return replace(
@@ -148,10 +148,10 @@ def normalize_report_mode(request_context):
 
 
 def report_from_evidence(ledger):
-    """直接提交成功的证据引用，不再让模型重复抄写。
+    """Submit successful evidence references without asking the model to transcribe values.
 
-    部分支持工具的本地模型仍会以文本收尾，而该文本不得提供业务数值：
-    服务器只选取真实的类型化指标和已认证的明细证据，再套用同一个报告校验器。
+    Local models may finish with text, but that text cannot supply business values. The server
+    selects real typed metrics and certified details through the same report validator.
     """
     from src.agent.detail_contract import completes_detail_request
 
@@ -172,14 +172,15 @@ def report_from_evidence(ledger):
 
 
 def _escape_cell(value):
-    """转义 Markdown 表格单元格中的竖线与换行。"""
+    """Escape pipes and newlines in Markdown table cells."""
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
 def _render_without_metrics(report, ledger):
-    """既无实际指标也无已验证报价时，尝试按收益率比较或期间报告渲染。
+    """Try comparison or period reports when neither metrics nor verified quotes exist.
 
-    返回 None 表示仅凭受限明细即可继续后续的通用渲染；其余情况抛出 ValueError。
+    None allows the generic bounded-detail renderer to continue; other invalid cases raise
+    ValueError.
     """
     from src.agent.detail_contract import bounded_detail_only_ready
     from src.agent.indexed_return_tool import render_comparison
@@ -196,7 +197,9 @@ def _render_without_metrics(report, ledger):
 
 
 def _check_report_references(report, ledger, by_id, actual_metrics):
-    """校验报告引用的指标、各类证据ID以及请求的明细/知识/字段/连接依据。"""
+    """Validate metric and evidence IDs plus requested detail, knowledge, field, and join
+    obligations.
+    """
     if set(report.metric_ids) != actual_metrics:
         raise ValueError("报告须引用本轮实际返回的全部指标ID，不能添加、替换或省略指标")
     for ids, kinds in [
@@ -224,7 +227,7 @@ def _check_report_references(report, ledger, by_id, actual_metrics):
 
 
 def _detail_sections(report, ledger, by_id):
-    """把选定的明细证据渲染为 Markdown 表格段落，并校验其满足所请求的行粒度。"""
+    """Render selected details as Markdown tables only when they satisfy the requested row grain."""
     from src.agent.detail_contract import completes_detail_request, requested_detail_limit
 
     sections = []
@@ -257,7 +260,9 @@ def _detail_sections(report, ledger, by_id):
 
 
 def _other_evidence_sections(report, by_id):
-    """渲染折扣报价，其余工具/文件/网页/导出证据交给台账的安全回答。"""
+    """Render discount quotes and delegate other tools, files, web, and exports to safe ledger
+    output.
+    """
     from src.agent.derived_calculation import validated_quotes
     from src.agent.grounding import EvidenceLedger
 
@@ -282,7 +287,9 @@ def _other_evidence_sections(report, by_id):
 
 
 def render_business_body(report, ledger):
-    """把模型提交的业务报告渲染为正文；引用必须存在于本轮账本，数值取自账本证据而非报告文本。"""
+    """Render a submitted report using existing ledger references and values, never model-written
+    numbers.
+    """
     from src.agent.derived_calculation import validated_quotes
 
     by_id = {entry["id"]: entry for entry in ledger.entries}
@@ -302,7 +309,7 @@ def render_business_body(report, ledger):
 
 
 def metric_stats(entries):
-    """汇总指标证据中有数值的计数类与金额类结果，返回 (计数集合, 金额集合)。"""
+    """Return numeric count and amount sets from metric evidence."""
     counts, amounts = set(), set()
     for entry in entries:
         if entry["kind"] != "metric" or entry["data"]["value"] is None:
@@ -317,7 +324,9 @@ def metric_stats(entries):
 
 
 def render_metric_results(entries):
-    """把指标证据渲染为 Markdown 表格，相同指标、范围、快照和过滤条件只保留一行；无指标时返回空串。"""
+    """Render metric rows, deduplicated by metric, scope, snapshot, and filters; return empty text
+    if absent.
+    """
     rows, seen = [], set()
     for entry in entries:
         if entry["kind"] != "metric":
@@ -334,6 +343,7 @@ def render_metric_results(entries):
         seen.add(identity)
 
         def escape(value):
+            """Escape a value for safe Markdown table rendering."""
             return str(value).replace("|", "\\|").replace("\n", " ")
 
         value = "未取得数值" if metric["value"] is None else metric["value"]

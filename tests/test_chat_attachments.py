@@ -1,4 +1,4 @@
-"""在隔离的文件与知识库存储上执行原生附件授权检查。"""
+"""Native attachment authorization against isolated file and knowledge stores."""
 
 import ast
 import asyncio
@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 @pytest.fixture
 def attachments():
+    """Provide attachments test data or behavior for this scenario."""
     path = (
         Path(__file__).resolve().parents[1] / "webui/backend/open_webui/utils/nexrag_attachments.py"
     )

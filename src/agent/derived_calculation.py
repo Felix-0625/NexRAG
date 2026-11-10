@@ -1,7 +1,7 @@
-"""将折扣运算绑定到本轮的数据库与制度证据。
+"""Bind discount calculations to this turn's database and policy evidence.
 
-纯计算器保持可复用；本层在 Agent 结果能满足派生金额任务之前，拒绝编造的输入金额、
-冒充合计的 SQL 常量，以及有歧义的制度百分比。
+Keep the pure calculator reusable; reject invented amounts, SQL constants masquerading as
+totals, and ambiguous policy percentages before accepting a derived-amount task.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ _PERCENT = re.compile(r"(?<![\w.])([0-9]+(?:\.[0-9]+)?)\s*[%％]")
 
 
 def requested_discount(prompt: str) -> bool:
-    """判断请求是否要求计算优惠或折后金额；只询问制度比例或上限属于检索，返回 False。"""
+    """Recognize discount calculations; rate-only and cap-only policy questions require retrieval."""
     from src.agent.task_intent import positive_request_text
 
     text = positive_request_text(prompt).lower()
@@ -34,7 +34,7 @@ def requested_discount(prompt: str) -> bool:
         r"(?:优惠|折后|折扣金额).{0,20}(?:多少钱|金额.*多少)|how much.{0,30}(?:discount|quote)",
         text,
     )
-    # 只询问制度的比例/上限属于检索，不是金额计算任务。
+    # Rate-only and cap-only questions are retrieval tasks, not amount calculations.
     return bool(topic and (explicit_math or money_question))
 
 
@@ -52,6 +52,8 @@ def _decimal(value) -> Decimal:
 
 @dataclass(frozen=True)
 class AmountBasis:
+    """Certified amount and its database evidence provenance."""
+
     evidence_id: str
     column: str
     amount: Decimal
@@ -67,10 +69,10 @@ def _money_column(name):
 
 
 def amount_bases(entries) -> list[AmountBasis]:
-    """接受简单的源列投影或 SUM(column)，不接受字面量。
+    """Accept simple source projections or SUM(column), never literal amounts.
 
-    达到常规 50 行上限的明细结果可能被截断，不能确定完整金额，此时必须有真实的 SUM 查询。
-    更复杂的 SQL 仍可用于回答，但必须暴露简单且已验证的金额投影，才能作为折扣的输入基数。
+    Details at the normal 50-row limit may be truncated and require a real SUM query. More
+    complex SQL may answer questions but must expose a certified simple amount basis.
     """
     candidates = []
     for entry in entries:
@@ -102,7 +104,7 @@ def amount_bases(entries) -> list[AmountBasis]:
             ):
                 continue
             key = projection.alias or projection.output_name or expression.sql(dialect="sqlite")
-            # SQLite 的表达式列头可能仅在空白/大小写上有差异。
+            # SQLite expression headers can differ only in whitespace or case.
             actual_key = next(
                 (
                     name
@@ -123,7 +125,7 @@ def amount_bases(entries) -> list[AmountBasis]:
 
 
 def rate_bases(prompt, entries):
-    """优先使用用户明确给出的百分比；否则使用带折扣标签的知识库事实。"""
+    """Prefer explicit user percentages; otherwise use labeled knowledge-base discount facts."""
     explicit = {_decimal(raw) for raw in _PERCENT.findall(prompt)}
     if explicit:
         return [("prompt", value) for value in sorted(explicit)]
@@ -183,7 +185,7 @@ def bind_discount_quote(
     rate_evidence_id=None,
     amount_column=None,
 ):
-    """为可复用的纯计算器 API 校验显式给出的数值输入。"""
+    """Validate explicit numeric inputs for the reusable pure calculator API."""
     result = calculate_discount_quote(amount, discount_percent)
     basis = _select_amount_basis(entries, basis_evidence_id, amount_column)
     if _decimal(result["original_amount"]) != basis.amount:
@@ -204,9 +206,10 @@ def bind_discount_quote(
 def quote_from_evidence(
     entries, prompt, *, basis_evidence_id=None, rate_evidence_id=None, amount_column=None
 ):
-    """由 Agent 选择证据，金额和百分比单位始终由服务器掌控。
+    """Let the agent select evidence while the server controls amounts and percentage units.
 
-    LLM 不会抄写任何金额或比例，因此制度中的 6% 不会变成 0.06 个百分点；证据冲突时仍需显式指定 ID。
+    The model never transcribes amounts or rates, so 6% cannot become 0.06 percentage points;
+    conflicting evidence still requires an explicit ID.
     """
     basis = _select_amount_basis(entries, basis_evidence_id, amount_column)
     rate_id, rate = _select_rate_basis(entries, prompt, rate_evidence_id)
@@ -222,7 +225,7 @@ def quote_from_evidence(
 
 
 def validated_quotes(entries):
-    """筛出账本中由内置折扣工具生成且带有证据绑定的报价条目。"""
+    """Select ledger quotes from the built-in discount tool with verified evidence bindings."""
     return [
         entry
         for entry in entries
@@ -235,7 +238,7 @@ def validated_quotes(entries):
 
 def _labelled_amounts(answer, label, *, source_total=False):
     values = set()
-    # 只去掉千分位逗号；分句逗号仍要阻止某个字段借用下一个字段的无关金额。
+    # Remove grouping commas, but retain clause boundaries so fields cannot borrow unrelated amounts.
     answer = re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", answer)
     for match in re.finditer(label + r"([^\n。；;，,]{0,140})", answer, re.I):
         if source_total:
@@ -244,11 +247,11 @@ def _labelled_amounts(answer, label, *, source_total=False):
             if is_post_discount_total(answer, match.start()):
                 continue
         body = match.group(1)
-        # 字段值必须紧跟在标签/标点之后。
-        # 像 '总金额与 KB1 的6%比例' 这样的文字是证据引用，并非声称数据库合计等于 1 或 6。
+        # Values must immediately follow their labels or punctuation.
+        # Evidence references and policy percentages do not assert a database total.
         if not re.match(r"[：:为是\s￥¥$\"']*-?[0-9]", body):
             continue
-        # 展示的公式在最后一个 '=' 之前可能含有基数/比例。
+        # Displayed formulas can contain bases and rates before the final equals sign.
         tail = re.split(r"=|＝", body)[-1]
         found = re.search(r"(?:[：:为是\s￥¥$\"'])*(-?[0-9]+(?:\.[0-9]+)?)(万|亿)?", tail)
         if found:
@@ -260,7 +263,7 @@ def _labelled_amounts(answer, label, *, source_total=False):
 
 
 def quote_answer_issues(answer, entries, prompt):
-    """对已验证的报价，不仅检查数值是否存在，也检查字段含义。"""
+    """Check quote field meaning as well as numeric presence."""
     quotes = validated_quotes(entries)
     if not quotes:
         return []
@@ -292,7 +295,7 @@ def quote_answer_issues(answer, entries, prompt):
 
 
 def discount_retry_hint(entries, prompt):
-    """生成折扣工具重试提示：列出账本中可用的金额基数与比例证据，要求只传证据选择器。"""
+    """Describe available amount and rate selectors for a discount-tool retry."""
     bases = (
         ", ".join(
             f"{basis.evidence_id}.{basis.column}={basis.amount}" for basis in amount_bases(entries)
@@ -311,10 +314,10 @@ def discount_retry_hint(entries, prompt):
 
 
 def discount_retry_context(entries, prompt):
-    """在工具调用无效后，暴露 ledger 中真实的选择器。
+    """Expose only real ledger selectors after invalid tool input.
 
-    文件名、集合 ID 和任意引用都不会被接受为证据 ID。此回调只报告真实的选择器，
-    不会悄悄修正不可信的选择，也不会放宽绑定校验。
+    Filenames, collection IDs, and arbitrary citations are not evidence IDs. Do not repair
+    untrusted selections silently or relax binding validation.
     """
     return {
         "available_bases": [

@@ -1,7 +1,6 @@
-"""轻量级原生解析器，父级上下文存放在子块 payload 中。
+"""Native parent-child parsing with whole parents embedded in child payloads.
 
-实现约定的 "Payload Trick"：细粒度子块用于稠密/稀疏检索建索引，
-完整的父级上下文则嵌入 payload。
+Fine-grained children support dense and sparse indexing while payloads preserve context.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from typing import Any
 
 
 class NativeParentChildChunker:
-    """纯 Python 的层级文档解析与分块生成器。"""
+    """Pure-Python hierarchical document parser and chunk builder."""
 
     def __init__(
         self,
@@ -35,14 +34,14 @@ class NativeParentChildChunker:
 
     @staticmethod
     def _split_into_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
-        """尽量沿段落或句子边界切分文本。"""
+        """Prefer paragraph and sentence boundaries to retain readable context."""
         text = text.strip()
         if not text:
             return []
         if len(text) <= chunk_size:
             return [text]
 
-        # 优先按双换行切分，其次单换行，再次句号/空格
+        # Prefer semantic boundaries before spaces to preserve context.
         paragraphs = re.split(r"(\n\n+)", text)
         chunks: list[str] = []
         current: list[str] = []
@@ -55,7 +54,7 @@ class NativeParentChildChunker:
                 joined = "".join(current).strip()
                 if joined:
                     chunks.append(joined)
-                # 尽可能保留尾部作为重叠
+                # Retain overlap so boundaries do not lose context.
                 overlap_text = joined[-overlap:] if overlap > 0 and len(joined) > overlap else ""
                 current = [overlap_text, part] if overlap_text else [part]
                 current_len = len(overlap_text) + len(part)
@@ -68,11 +67,10 @@ class NativeParentChildChunker:
             if joined:
                 chunks.append(joined)
 
-        # 兜底：处理超过 chunk_size 的超长单段落
+        # Bound oversized single paragraphs through fallback splitting.
         final_chunks: list[str] = []
         for c in chunks:
             if len(c) > chunk_size * 1.5:
-                # 按固定滑动窗口再切分
                 step = max(chunk_size - overlap, 50)
                 for start in range(0, len(c), step):
                     sub = c[start : start + chunk_size].strip()
@@ -91,7 +89,7 @@ class NativeParentChildChunker:
         file_id: str | None = None,
         collection_name: str | None = None,
     ) -> list[dict[str, Any]]:
-        """将原始文档切成父块，并把父块嵌入子块的 payload。"""
+        """Create parent-child chunks with parent context inside child payloads."""
         content = content.strip()
         if not content:
             return []
@@ -99,8 +97,8 @@ class NativeParentChildChunker:
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         effective_file_id = file_id or content_hash[:12]
         effective_collection = collection_name or "nexrag_docs"
-        # 同一份字节上传到两个私有库时绝不能共用 point ID，
-        # 否则 Qdrant upsert 会覆盖另一个库的 payload。
+        # Identical bytes in different private libraries must not share point IDs;
+        # otherwise Qdrant upserts overwrite another library's payload.
         identity = f"{effective_collection}\0{effective_file_id}\0{content_hash}"
         doc_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
         effective_tenant = tenant_id or "shared"
@@ -154,12 +152,11 @@ class NativeParentChildChunker:
         file_id: str | None = None,
         collection_name: str | None = None,
     ) -> list[dict[str, Any]]:
-        """读取并解析本地 text/markdown/csv 文件，生成层级分块。"""
+        """Read local text, Markdown, or CSV into hierarchical chunks."""
         path = Path(file_path).resolve()
         if not path.is_file():
             raise FileNotFoundError(path)
 
-        # 纯文本或常见 UTF-8 格式直接读取
         content = path.read_text(encoding="utf-8", errors="replace")
         return self.chunk_text(
             content,

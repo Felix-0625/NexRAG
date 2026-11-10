@@ -1,7 +1,7 @@
-"""管理员批准的、供现有单一 Agent 使用的 MCP 能力。
+"""Administrator-approved MCP capabilities for the existing agent.
 
-审批绑定固定的端点修订版和完整公布的工具规格。仅有账号授权，
-永远不足以把受保护数据发送给某个服务器。
+Approval pins endpoint revisions and complete schemas. Account grants alone never permit
+sending protected data to a server.
 """
 
 from __future__ import annotations
@@ -27,18 +27,24 @@ MAX_ARGUMENT_BYTES = 16_384
 
 
 class MCPError(ValueError):
-    """MCP 操作未能执行；绝不伪造结果。"""
+    """Report MCP failure without fabricated results."""
 
 
 class MCPDenied(MCPError):
+    """Reject an MCP operation that current authorization does not permit."""
+
     pass
 
 
 class MCPUnavailable(MCPError):
+    """Report a safe MCP connectivity or transport failure."""
+
     pass
 
 
 class MCPStaleApproval(MCPError):
+    """Reject tool schemas or server revisions that no longer match approval."""
+
     pass
 
 
@@ -106,7 +112,7 @@ def _audit(connection, action, actor_id, target, status="ok"):
 
 
 def audit_events(principal):
-    """返回 MCP 审计事件（最多保留最近 200 条）；仅管理员可读。"""
+    """Return up to 200 recent audit events for administrators."""
     _admin(principal)
     row = get_ops_store().query_one(
         "SELECT value FROM workspace_settings WHERE key=?", (AUDIT_KEY,)
@@ -128,7 +134,7 @@ def _public(server):
 
 
 def list_servers(principal):
-    """返回全部 MCP 连接的公开视图（去掉加密凭据，只给 has_token）；仅管理员可调用。"""
+    """List secret-free server views with has_token for administrators."""
     _admin(principal)
     return [_public(server) for server in _registry().values()]
 
@@ -168,10 +174,10 @@ def save_server(
     enabled: bool = True,
     transport: str = "streamable_http",
 ):
-    """新增或更新 MCP 连接（仅管理员，仅支持 Streamable HTTP）。
+    """Save an administrator-owned Streamable HTTP server.
 
-    凭据加密存储；每次保存使修订号加一并清空已发现的工具，旧审批随之失效。
-    更换地址时必须同时重新填写或明确清除旧凭据。返回不含凭据的公开视图。
+    Encrypt keys, increment revisions, and clear discovered tools and approvals on save.
+    Endpoint changes require replacement or clearing of credentials; return a public view.
     """
     _admin(principal)
     if transport != "streamable_http":
@@ -213,8 +219,8 @@ def save_server(
         )
         if clear_token or token is not None:
             record["encrypted_token"] = _cipher().encrypt(token.encode()).decode() if token else ""
-        # 保存配置会有意使既有审批失效。分发此修订版之前，
-        # 先发现并审阅目标当前的工具。
+        # Saving intentionally invalidates approvals; discover and review current tools
+        # before distributing this revision.
         records[identifier] = record
         _write(connection, records)
         _audit(connection, "mcp.server.save", principal.user_id, identifier)
@@ -226,6 +232,7 @@ def _safe_schema(schema):
         raise MCPError("MCP 工具 schema 必须是有限大小的 JSON 对象")
 
     def walk(value, depth=0):
+        """Validate nested schema content within the depth and reference limits."""
         if depth > 30:
             raise MCPError("MCP 工具 schema 嵌套过深")
         if isinstance(value, dict):
@@ -250,7 +257,7 @@ def _safe_schema(schema):
 
 
 def normalize_spec(raw: dict) -> tuple[dict, str]:
-    """校验 MCP 工具公布的规格（名称、大小、schema 无外部引用）并返回 (规格, SHA-256 哈希)；不合规抛出 MCPError。"""
+    """Validate tool names, sizes, and self-contained schemas; return spec and SHA-256."""
     name = raw.get("name", "")
     if not isinstance(name, str) or not NAME.fullmatch(name):
         raise MCPError("MCP 工具名称格式无效")
@@ -273,10 +280,10 @@ def normalize_spec(raw: dict) -> tuple[dict, str]:
 
 
 async def discover_server(principal, identifier):
-    """探测已启用的 MCP 连接并刷新其工具清单（仅管理员）。
+    """Discover enabled-server tools for administrators.
 
-    schema 哈希未变的工具保留原审批，新增或变化的工具为未审批；
-    探测期间配置若被修改则抛出 MCPStaleApproval。
+    Keep approvals only for unchanged hashes. Reject concurrent configuration changes with
+    MCPStaleApproval.
     """
     _admin(principal)
     from src.midplatform.mcp_transport import probe
@@ -309,10 +316,9 @@ async def discover_server(principal, identifier):
 def approve_tool(
     principal, identifier, name, *, revision: int, schema_hash: str, read_only_confirmed: bool
 ):
-    """批准一个 MCP 工具（仅管理员）。
+    """Approve an explicitly read-only tool with matching revision and hash.
 
-    必须明确确认只读，且连接修订号和工具 schema 哈希须与当前一致，
-    否则抛出 MCPDenied 或 MCPStaleApproval；批准后连接修订号加一。
+    Reject denied or stale approvals and increment the server revision on success.
     """
     _admin(principal)
     if read_only_confirmed is not True:
@@ -337,7 +343,7 @@ def approve_tool(
 
 
 def revoke_tool(principal, identifier, name):
-    """撤销一个 MCP 工具的审批并使连接修订号加一（仅管理员）；工具不存在时抛出 MCPError。"""
+    """Revoke approval and increment server revision; reject unknown tools."""
     _admin(principal)
     with get_ops_store().transaction() as connection:
         records = _registry(connection)
@@ -352,7 +358,7 @@ def revoke_tool(principal, identifier, name):
 
 
 def approved_catalog():
-    """只返回非机密的描述信息；账号/数据策略在使用时才强制执行。"""
+    """Return nonsecret descriptions, deferring account and data-policy enforcement to use."""
     return [
         dict(
             tool_id=f"mcp:{server['id']}:{name}",
@@ -415,6 +421,7 @@ async def _invoke_tool(context, tool_id, arguments, *, revision, schema_hash):
     from src.midplatform.mcp_transport import call
 
     async def recheck():
+        """Revalidate the current MCP approval immediately before invocation."""
         await _authorized(context, tool_id, revision, schema_hash)
 
     return await call(
@@ -428,7 +435,7 @@ async def _invoke_tool(context, tool_id, arguments, *, revision, schema_hash):
 
 
 async def invoke_tool(context, tool_id: str, arguments: dict, *, revision: int, schema_hash: str):
-    """连接/调用前重新校验授权；只审计元数据，不记录内容。"""
+    """Recheck grants before connection and invocation; audit metadata only, never content."""
     try:
         result = await _invoke_tool(
             context, tool_id, arguments, revision=revision, schema_hash=schema_hash

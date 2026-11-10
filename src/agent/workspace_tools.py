@@ -1,6 +1,7 @@
-"""按请求提供的工具能力：经过审计的内置工具与显式允许的桥接工具。
+"""Audited built-in and explicitly allowed bridge capabilities supplied per request.
 
-已签发的 ticket 并不构成足够的权限：任何外部工具参数离开 Agent 之前，都会立即重新检查账号/资源策略。
+A ticket alone is insufficient: recheck account and resource policy immediately before
+external tool arguments leave the agent.
 """
 
 from __future__ import annotations
@@ -17,10 +18,11 @@ from src.config import settings
 
 
 def _business_access_tool(deps: AgentDeps) -> Tool:
-    """构造业务范围核验工具（仅在本轮需要数据库证据时注册）。"""
+    """Build the scope-check tool only when this run requires database evidence."""
     from src.agent.business_access import check_requested_scope
 
     def check_business_access(scope_id: str):
+        """Check explicit scope access using the current turn authorization."""
         return check_requested_scope(deps, scope_id)
 
     return Tool(
@@ -32,7 +34,7 @@ def _business_access_tool(deps: AgentDeps) -> Tool:
 
 
 def _discount_quote_tool(deps: AgentDeps) -> Tool:
-    """构造折扣计算工具；每次调用都会重新校验授权是否已被撤销。"""
+    """Build a discount tool that rechecks revocation on every call."""
     context = deps.context
 
     async def discount_quote(
@@ -40,6 +42,7 @@ def _discount_quote_tool(deps: AgentDeps) -> Tool:
         rate_evidence_id: str | None = None,
         amount_column: str | None = None,
     ):
+        """Calculate a quote from authorized evidence selectors, not model-written values."""
         if DISCOUNT_TOOL_ID not in (await refresh_policy(context)).allowed_tool_ids:
             return {"error": "折扣计算工具授权已撤销，未执行计算"}
         from src.agent.derived_calculation import (
@@ -80,10 +83,11 @@ def _discount_quote_tool(deps: AgentDeps) -> Tool:
 
 
 def _bridge_callback(deps: AgentDeps, original_name, tool_id):
-    """为单个工作区桥接工具生成回调：先重验策略，再携带 ticket 转发到桥接服务。"""
+    """Build a bridge callback that revalidates policy before forwarding its ticket."""
     context = deps.context
 
     async def invoke(**arguments):
+        """Recheck authorization before forwarding the bound tool invocation."""
         policy = await refresh_policy(context)
         if not policy.external_tools or tool_id not in policy.allowed_tool_ids:
             return {"error": "当前数据范围或账号未授权调用此工具，未发送参数"}
@@ -110,7 +114,7 @@ def _bridge_callback(deps: AgentDeps, original_name, tool_id):
 
 
 def _bridge_tools(deps: AgentDeps) -> list[Tool]:
-    """把请求携带的工作区工具声明转换为带编号的桥接工具，跳过无效声明。"""
+    """Convert valid request tool declarations into numbered bridge tools."""
     tools = []
     for index, spec in enumerate(deps.context.workspace_tools):
         if not spec.get("name") or not isinstance(spec.get("parameters"), dict):
@@ -127,7 +131,9 @@ def _bridge_tools(deps: AgentDeps) -> list[Tool]:
 
 
 def build_workspace_toolset(deps: AgentDeps) -> FunctionToolset:
-    """按本轮业务需求、现行授权和桥接票据组装工具，不缓存跨账号工具集。"""
+    """Assemble tools from current obligations, live grants, and bridge tickets without
+    cross-account caching.
+    """
     from src.agent.mcp_tools import approved_tools
 
     functions = approved_tools(deps)

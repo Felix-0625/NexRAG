@@ -25,7 +25,7 @@ def test_docx_keeps_paragraph_and_table_cell_text(tmp_path):
 
 
 def test_docx_with_entity_expansion_is_rejected(tmp_path):
-    """实体膨胀（billion laughs）不能把上传文件变成内存炸弹。"""
+    """Entity expansion must not turn an upload into a memory bomb."""
     path = tmp_path / "bomb.docx"
     bomb = (
         '<?xml version="1.0"?><!DOCTYPE d [<!ENTITY a "aaaaaaaaaa">'

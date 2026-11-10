@@ -1,7 +1,7 @@
-"""长期记忆使用的 embedding 客户端和向量索引。
+"""Embedding clients and vector indexes for memory.
 
-生产环境使用 Ollama/OpenAI 兼容的 embedding 端点和 Qdrant。``InMemoryVectorIndex``
-提供相同接口，用于测试和无 Qdrant 的运行；ops store 中的元数据始终是事实来源。
+Production uses compatible embedding endpoints and Qdrant. In-memory indexing supports
+tests and outages; operations metadata remains authoritative.
 """
 
 from __future__ import annotations
@@ -20,11 +20,15 @@ log = logging.getLogger(__name__)
 
 
 class Embedder(Protocol):
-    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+    """Batch text-embedding interface shared by local and HTTP implementations."""
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Return one embedding per input text in input order."""
+        ...
 
 
 class HttpEmbedder:
-    """OpenAI 兼容的 /embeddings 客户端（默认 Ollama bge-m3）。"""
+    """OpenAI-compatible embeddings client, defaulting to Ollama bge-m3."""
 
     def __init__(
         self, base_url: str | None = None, api_key: str | None = None, model: str | None = None
@@ -34,7 +38,7 @@ class HttpEmbedder:
         self.model = model or settings.EMBEDDING_MODEL
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        """为文本批量生成向量，按输入顺序返回；端点非本机回环或模型为云端模型时拒绝（ValueError）。"""
+        """Embed in input order; reject nonloopback endpoints and cloud models."""
         if not texts:
             return []
         from src.memory.local_policy import cloud_model_name
@@ -56,12 +60,12 @@ class HttpEmbedder:
 
 
 def point_id(record_id: str) -> str:
-    """Qdrant 要求 UUID 或整数 ID，因此由自有 hex ID 派生稳定的 UUID。"""
+    """Derive stable UUIDs from owned hex IDs for Qdrant compatibility."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"nexrag:{record_id}"))
 
 
 def cosine(a: list[float], b: list[float]) -> float:
-    """两个向量的余弦相似度；任一向量为零向量时返回 0.0。"""
+    """Compute cosine similarity, returning zero for zero vectors."""
     dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
@@ -69,17 +73,25 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 
 class VectorIndex(Protocol):
-    def upsert(self, record_id: str, vector: list[float], payload: dict[str, Any]) -> None: ...
+    """Vector storage and filtered nearest-neighbor search contract."""
 
-    def delete(self, record_ids: list[str]) -> None: ...
+    def upsert(self, record_id: str, vector: list[float], payload: dict[str, Any]) -> None:
+        """Insert or replace a record vector and filterable metadata."""
+        ...
+
+    def delete(self, record_ids: list[str]) -> None:
+        """Remove vectors for the specified record IDs."""
+        ...
 
     def search(
         self, vector: list[float], must: dict[str, Any], limit: int
-    ) -> list[tuple[str, float]]: ...
+    ) -> list[tuple[str, float]]:
+        """Return the highest-scoring vectors matching the visibility filters."""
+        ...
 
 
 def _matches(payload: dict[str, Any], must: dict[str, Any]) -> bool:
-    """内存索引使用的相等/成员关系过滤。"""
+    """Match equality and membership filters in the in-memory index."""
     for key, expected in must.items():
         value = payload.get(key)
         if isinstance(expected, (list, tuple, set)):
@@ -91,21 +103,21 @@ def _matches(payload: dict[str, Any], must: dict[str, Any]) -> bool:
 
 
 class InMemoryVectorIndex:
-    """进程内向量索引，使用精确余弦搜索。"""
+    """Process-local index using exact cosine search."""
 
     def __init__(self):
         self._points: dict[str, tuple[list[float], dict[str, Any]]] = {}
         self._lock = threading.Lock()
-        # 作为不可达 Qdrant 的替身时为 True（见 memory.runtime）。
+        # Flag unavailable-Qdrant stand-ins so writes remain queued.
         self.fallback = False
 
     def upsert(self, record_id: str, vector: list[float], payload: dict[str, Any]) -> None:
-        """写入或覆盖一条记录的向量与过滤字段。"""
+        """Insert or replace a vector and filter metadata."""
         with self._lock:
             self._points[record_id] = (vector, dict(payload))
 
     def delete(self, record_ids: list[str]) -> None:
-        """删除指定记录的向量；记录不存在时忽略。"""
+        """Delete a vector, ignoring missing records."""
         with self._lock:
             for record_id in record_ids:
                 self._points.pop(record_id, None)
@@ -113,7 +125,7 @@ class InMemoryVectorIndex:
     def search(
         self, vector: list[float], must: dict[str, Any], limit: int
     ) -> list[tuple[str, float]]:
-        """在满足 must 过滤条件的记录中按余弦相似度检索，返回相似度最高的 limit 个 (记录 ID, 相似度)。"""
+        """Return top matching record IDs and cosine scores within the limit."""
         with self._lock:
             scored = [
                 (record_id, cosine(vector, stored))
@@ -124,7 +136,7 @@ class InMemoryVectorIndex:
 
 
 class QdrantVectorIndex:
-    """带 payload 过滤的 Qdrant collection，首次 upsert 时惰性创建。"""
+    """Payload-filtered Qdrant collection created lazily at first upsert."""
 
     def __init__(self, collection: str, url: str | None = None):
         from qdrant_client import QdrantClient
@@ -163,7 +175,7 @@ class QdrantVectorIndex:
         return Filter(must=conditions)
 
     def upsert(self, record_id: str, vector: list[float], payload: dict[str, Any]) -> None:
-        """写入或覆盖一条记录的向量；collection 不存在时按该向量维度先创建。"""
+        """Upsert a vector, creating a matching-dimension collection if needed."""
         from qdrant_client.models import PointStruct
 
         self._ensure(len(vector))
@@ -179,7 +191,7 @@ class QdrantVectorIndex:
         )
 
     def delete(self, record_ids: list[str]) -> None:
-        """删除指定记录的向量；列表为空或 collection 尚不存在时不做任何事。"""
+        """Delete vectors; ignore empty IDs and collections not yet created."""
         from qdrant_client.models import PointIdsList
 
         if record_ids and self.client.collection_exists(self.collection):
@@ -191,7 +203,7 @@ class QdrantVectorIndex:
     def search(
         self, vector: list[float], must: dict[str, Any], limit: int
     ) -> list[tuple[str, float]]:
-        """在满足 must 过滤条件的记录中检索最相似的 limit 个 (记录 ID, 得分)；collection 尚不存在时返回空列表。"""
+        """Return top matching IDs and scores, or no results before collection creation."""
         if not self.client.collection_exists(self.collection):
             return []
         response = self.client.query_points(

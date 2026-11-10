@@ -1,4 +1,4 @@
-"""用户的退出选项要约束核心辅助函数，而不只是上游界面的偏好设置。"""
+"""User opt-out constrains core helpers, not only upstream UI preferences."""
 
 import asyncio
 from types import SimpleNamespace
@@ -18,6 +18,7 @@ from src.midplatform.tenant_access import Principal, get_principal
 
 
 def candidate():
+    """Build a memory candidate with explicit test defaults."""
     return MemoryCandidate(
         "global", "preference", "user", "language", "Chinese", 0.9, "user_explicit", 6
     )
@@ -99,6 +100,7 @@ def test_opt_out_during_embedding_prevents_late_write_or_delivery(
     original = embedder.embed
 
     async def disable_while_embedding(texts):
+        """Provide disable while embedding test data or behavior for this scenario."""
         result = await original(texts)
         set_memory_enabled("alice", False)
         return result
@@ -113,6 +115,7 @@ def test_opt_out_during_embedding_prevents_late_write_or_delivery(
 
 def test_opt_out_during_extraction_prevents_new_records(isolated_ops, embedder):
     async def completer(system, user):
+        """Provide completer test data or behavior for this scenario."""
         set_memory_enabled("alice", False)
         return '{"items":[{"scope":"global","kind":"preference","subject":"user","attribute":"language","value":"Chinese","confidence":0.9,"importance":6,"explicit":true}]}'
 

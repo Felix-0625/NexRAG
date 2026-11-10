@@ -1,4 +1,4 @@
-"""显式限定行数的明细可完成抽样回答，但不能证明整个数据源的汇总。"""
+"""Explicitly bounded details satisfy samples, never whole-source aggregates."""
 
 import asyncio
 import sqlite3
@@ -26,6 +26,7 @@ IDENTIFIER = "002f98c0f7efd42638ed6100ca699b42"
 
 
 def evidence(prompt=PROMPT, sql="SELECT order_id FROM seller_orders LIMIT 1", rows=None):
+    """Provide evidence test data or behavior for this scenario."""
     ledger = EvidenceLedger(prompt=prompt, required=requested_capabilities(prompt, True))
     ledger.add("db", [{"order_id": IDENTIFIER}] if rows is None else rows, sql=sql)
     return ledger
@@ -49,6 +50,7 @@ def test_original_request_succeeds_through_actual_agent_snapshot_and_report(tmp_
     calls = 0
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -60,7 +62,7 @@ def test_original_request_succeeds_through_actual_agent_snapshot_and_report(tmp_
                 ]
             )
         assert calls == 2 and not info.function_tools and info.output_tools
-        # 即使模型抄错，服务端也会渲染实际的受限证据。
+        # Render actual bounded evidence even when the model transcribes it incorrectly.
         return ModelResponse([TextPart("订单号：invented-other-account。")])
 
     runner = AgenticRunner()
@@ -74,6 +76,7 @@ def test_original_request_succeeds_through_actual_agent_snapshot_and_report(tmp_
     )
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 PROMPT,

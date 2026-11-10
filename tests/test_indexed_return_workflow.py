@@ -1,4 +1,4 @@
-"""归一化收益率需要基准值，不能只看期末值之差。"""
+"""Normalized returns require a base, not just terminal-value subtraction."""
 
 import asyncio
 
@@ -48,6 +48,7 @@ def test_actual_agent_retries_reversed_series_and_finishes_without_another_provi
     calls = 0
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal calls
         calls += 1
         tools = {tool.name for tool in info.function_tools}
@@ -84,6 +85,7 @@ def test_actual_agent_retries_reversed_series_and_finishes_without_another_provi
     evaluation.knowledge_documents = [{"source": "public.md", "content": SOURCE}]
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 PROMPT,

@@ -1,4 +1,4 @@
-"""按失败原因和工具归并近期的合成训练样本。"""
+"""Group recent synthetic training failures by reason and tool."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from src.midplatform.ops_store import OpsStore, get_ops_store, now
 
 @dataclass
 class FailureCluster:
+    """Related synthetic training failures eligible for proposal generation."""
+
     key: str
     reason: str
     tool: str | None
@@ -19,13 +21,14 @@ class FailureCluster:
 
     @property
     def size(self) -> int:
+        """Return the number of failures represented by this cluster."""
         return len(self.trace_ids)
 
 
 def mine_failures(
     store: OpsStore | None = None, *, window_days: float | None = None, at: float | None = None
 ) -> list[FailureCluster]:
-    """返回近期窗口内的失败聚类，按权重从大到小排序。"""
+    """Return recent failure clusters ordered by descending weight."""
     store = store or get_ops_store()
     at = at if at is not None else now()
     since = at - (window_days or settings.EVOLUTION_WINDOW_DAYS) * 86_400
@@ -53,5 +56,5 @@ def mine_failures(
 
 
 def actionable(clusters: list[FailureCluster]) -> list[FailureCluster]:
-    """只保留规模不小于 EVOLUTION_MIN_CLUSTER_SIZE 的聚类，单次投诉不会触发改动。"""
+    """Require the minimum cluster size so one complaint cannot trigger a change."""
     return [c for c in clusters if c.size >= settings.EVOLUTION_MIN_CLUSTER_SIZE]

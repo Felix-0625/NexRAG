@@ -1,1 +1,1 @@
-"""NexRAG 自进化包。"""
+"""NexRAG evolution package."""

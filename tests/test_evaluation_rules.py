@@ -1,4 +1,4 @@
-"""格式错误的验收规则必须在保存或运行实验之前就失败。"""
+"""Malformed acceptance rules must fail before saving or running experiments."""
 
 from __future__ import annotations
 

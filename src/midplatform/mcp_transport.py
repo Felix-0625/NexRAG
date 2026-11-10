@@ -1,7 +1,7 @@
-"""有界的官方 MCP 2.x Streamable HTTP 传输，不执行 shell。
+"""Bounded official MCP 2.x Streamable HTTP transport without shell execution.
 
-会话的进入、调用和退出都在同一个 task 内。不提供关闭 TLS 或重定向的选项，
-包括 MCP SDK 本来可能跟随的重定向。
+Enter, call, and exit in one task. Do not expose TLS-disable or redirect options, including
+redirects the SDK might otherwise follow.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ MAX_TOOLS = 100
 
 
 async def _target_ip(url):
-    """只解析一次 DNS 并固定结果，拒绝被重新绑定到本地网络的远端主机名。"""
+    """Resolve DNS once and pin it, rejecting remote hosts rebound onto local networks."""
     parsed = urlsplit(url)
     try:
         literal = ipaddress.ip_address(parsed.hostname or "")
@@ -45,8 +45,8 @@ async def _target_ip(url):
         parsed.scheme != "https" or any(not address.is_global for address in addresses)
     ):
         raise MCPError("远程 MCP 必须使用 HTTPS 公网地址，禁止解析到内网、链路本地或保留地址")
-    # 两种地址族都存在时优先 IPv4，连接时不再二次解析；
-    # TLS 仍通过 SNI 校验原始主机名。
+    # Prefer IPv4 and do not resolve again during connection;
+    # TLS still verifies the original hostname through SNI.
     return str(sorted(addresses, key=lambda address: (address.version, str(address)))[0])
 
 
@@ -65,10 +65,12 @@ def _sdk():
 
 
 def guarded_transport(inner=None, *, endpoint=None):
-    """HTTP 响应防护；可注入的 transport 用于离线协议测试。"""
+    """Guard response sizes with injectable transport for offline protocol tests."""
     httpx2, _, _, _ = _sdk()
 
     class BoundedStream(httpx2.AsyncByteStream):
+        """Count streamed response bytes before they reach the MCP parser."""
+
         def __init__(self, stream, budget):
             self.stream, self.budget = stream, budget
 
@@ -80,15 +82,19 @@ def guarded_transport(inner=None, *, endpoint=None):
                 yield chunk
 
         async def aclose(self):
+            """Close the wrapped HTTP resource."""
             await self.stream.aclose()
 
     class Guard(httpx2.AsyncBaseTransport):
+        """Enforce pinned destinations and bounded MCP HTTP responses."""
+
         def __init__(self):
             self.inner = inner or httpx2.AsyncHTTPTransport(verify=True, trust_env=False, retries=0)
             self.budget = [0]
             self.target_ip = None
 
         async def handle_async_request(self, request):
+            """Validate and forward an MCP request through the guarded transport."""
             outbound = request
             if endpoint is not None:
                 target = httpx2.URL(endpoint)
@@ -124,6 +130,7 @@ def guarded_transport(inner=None, *, endpoint=None):
             return response
 
         async def aclose(self):
+            """Close the wrapped HTTP resource."""
             await self.inner.aclose()
 
     return Guard()
@@ -133,8 +140,8 @@ def guarded_transport(inner=None, *, endpoint=None):
 async def _session(url, token):
     httpx2, ClientSession, streamable_http_client, _ = _sdk()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    # 禁用压缩，使传输字节上限约束的是解析后的 JSON/SSE，
-    # 而不是解压炸弹压缩后的线上报文。
+    # Disable compression so the byte limit bounds parsed JSON and SSE,
+    # not a decompression bomb's compressed wire representation.
     headers["Accept-Encoding"] = "identity"
     async with httpx2.AsyncClient(
         transport=guarded_transport(endpoint=url),
@@ -170,7 +177,7 @@ async def _tools(session):
 
 
 async def probe(url, token):
-    """真实执行 initialize + tools/list；不伪造离线回退结果。"""
+    """Perform real initialization and tools/list without fabricated fallback."""
     try:
         async with asyncio.timeout(TIMEOUT_SECONDS):
             async with _session(url, token) as session:
@@ -182,10 +189,10 @@ async def probe(url, token):
 
 
 async def call(url, token, name, arguments, *, schema_hash, before_call):
-    """连接 MCP 服务并调用一个工具，返回 JSON 结果。
+    """Call a remote tool and return bounded JSON.
 
-    先确认远端公布的该工具 schema 哈希与审批时一致（否则 MCPStaleApproval），
-    调用前再执行 before_call 复核授权；结果过大、工具报错或超时均抛出 MCPError 子类，不返回原始网络文本。
+    Require the approved schema hash and recheck grants immediately before the call. Raise
+    safe MCP errors for oversized responses, tool failures, and timeouts.
     """
     try:
         async with asyncio.timeout(TIMEOUT_SECONDS):
@@ -212,7 +219,7 @@ async def call(url, token, name, arguments, *, schema_hash, before_call):
 
 
 def _safe_error(exc):
-    """展开 TaskGroup 的失败，且不返回原始网络/凭据文本。"""
+    """Unwrap TaskGroup failures without exposing raw network or credential details."""
     if isinstance(exc, MCPError):
         return exc
     if isinstance(exc, BaseExceptionGroup):

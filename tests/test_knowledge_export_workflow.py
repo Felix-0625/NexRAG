@@ -1,4 +1,4 @@
-"""文档报告在行投影被拒绝后，会改用有依据的文本导出重试。"""
+"""Document reports retry with grounded text exports after row projections fail."""
 
 import asyncio
 from types import SimpleNamespace
@@ -32,6 +32,7 @@ def test_actual_agent_retries_kb_rows_as_text_and_writes_only_verified_report(
     retrieved = []
 
     async def search(*args, **kwargs):
+        """Provide search test data or behavior for this scenario."""
         retrieved.append(kwargs)
         return [{"source": "synthetic.md", "content": SOURCE}]
 
@@ -39,6 +40,7 @@ def test_actual_agent_retries_kb_rows_as_text_and_writes_only_verified_report(
     calls = 0
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal calls
         calls += 1
         tools = {tool.name for tool in info.function_tools}
@@ -59,7 +61,7 @@ def test_actual_agent_retries_kb_rows_as_text_and_writes_only_verified_report(
         if calls == 3:
             assert tools == {"export_analysis"}
             assert not list(tmp_path.rglob("*.md"))
-            # 先是一次真实的 ModelRetry，随后同一工具再成功调用一次。
+            # Require a real ModelRetry followed by a successful call to the same tool.
             assert "rows=None" in str(messages[-1])
             return ModelResponse(
                 [
@@ -76,6 +78,7 @@ def test_actual_agent_retries_kb_rows_as_text_and_writes_only_verified_report(
     runner._agent = runner._build_agent(FunctionModel(model))
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 PROMPT,

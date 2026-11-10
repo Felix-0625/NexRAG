@@ -1,4 +1,4 @@
-"""经认证的时间序列报告保留原始单位，并拒绝虚构的参照值。"""
+"""Certified time-series reports preserve units and reject fabricated reference values."""
 
 import pytest
 
@@ -13,6 +13,7 @@ from src.agent.source_facts import bind_period_operands
 
 
 def ledger_for(unit):
+    """Provide ledger for test data or behavior for this scenario."""
     prompt = "What is the percentage change in cash flow hedges in 2011 compared to 2010?"
     text = f"Cash flow hedges were $153.7 {unit} and $139.9 {unit} in fiscal 2011 and 2010, respectively."
     ledger = EvidenceLedger(prompt=prompt, required={"kb", "arithmetic:percent_change"})
@@ -96,18 +97,22 @@ def test_renderer_shortcut_runs_live_authorization_and_normal_output_validator(
     from src.midplatform import agent_models
 
     def model(*_):
+        """Provide deterministic model responses for this scenario."""
         raise AssertionError("Completed certified report must not invoke a provider")
 
     async def refresh(_):
+        """Provide refresh test data or behavior for this scenario."""
         if revoked == "knowledge":
             raise ValueError("knowledge revoked")
         return SimpleNamespace(check_model=lambda _: None)
 
     def require_model(*_):
+        """Provide require model test data or behavior for this scenario."""
         if revoked == "model":
             raise ValueError("model revoked")
 
     def require_business(*_):
+        """Provide require business test data or behavior for this scenario."""
         if revoked == "business":
             raise ValueError("business revoked")
 
@@ -118,6 +123,7 @@ def test_renderer_shortcut_runs_live_authorization_and_normal_output_validator(
     original_issues = EvidenceLedger.issues
 
     def issues(self, answer):
+        """Provide issues test data or behavior for this scenario."""
         validated.append(answer)
         return original_issues(self, answer)
 
@@ -158,6 +164,7 @@ def test_agent_retrieves_and_calculates_then_finalizes_without_third_provider_ca
     calls = 0
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -189,6 +196,7 @@ def test_agent_retrieves_and_calculates_then_finalizes_without_third_provider_ca
     runner._agent = runner._build_agent(FunctionModel(model))
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 "仅检索知识库，不查询业务数据库。" + fixture.prompt,

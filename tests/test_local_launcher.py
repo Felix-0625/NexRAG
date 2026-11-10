@@ -1,4 +1,4 @@
-"""验证启动安全与配置，不下载任何内容，也不依赖真实 AI 服务。"""
+"""Test startup safety and configuration without downloads or real AI services."""
 
 import hashlib
 import os
@@ -16,6 +16,7 @@ from scripts.webui_dependencies import locked_webui_requirements, webui_requirem
 
 @pytest.fixture
 def checkout(tmp_path, monkeypatch):
+    """Provide checkout test data or behavior for this scenario."""
     monkeypatch.setattr(launcher, "ROOT", tmp_path)
     monkeypatch.setattr(launcher, "STATE", tmp_path / ".local-run")
     monkeypatch.chdir(tmp_path)
@@ -54,6 +55,36 @@ def test_fresh_config_normalizes_docker_urls_without_editing_them(checkout):
     assert (
         dotenv_values(checkout / ".env")["EMBEDDING_API_BASE_URL"]
         == "http://host.docker.internal:11434/v1"
+    )
+
+
+@pytest.mark.parametrize("legacy_storage", [False, True])
+def test_native_sparse_default_preserves_existing_legacy_index(
+    checkout, monkeypatch, legacy_storage
+):
+    monkeypatch.delenv("SPARSE_MODEL", raising=False)
+    monkeypatch.delenv("QDRANT_INDEX", raising=False)
+    template = checkout / ".env.example"
+    with template.open("a", encoding="utf-8") as stream:
+        stream.write("SPARSE_MODEL=BAAI/bge-m3\nQDRANT_INDEX=nexrag_knowledge_bge_m3\n")
+    if legacy_storage:
+        (checkout / ".env").write_text("# Existing installation\n", encoding="utf-8")
+        (checkout / "data/qdrant/storage/collections/nexrag_knowledge").mkdir(parents=True)
+    base = launcher.prepare_environment()
+    envs = launcher.service_environments(base, launcher.pick_ports())
+    index = "nexrag_knowledge" if legacy_storage else "nexrag_knowledge_bge_m3"
+    model = "Qdrant/bm42-all-minilm-l6-v2-attentions" if legacy_storage else "BAAI/bge-m3"
+    provider = "fastembed" if legacy_storage else "bge-m3"
+    assert envs["ingestion"]["QDRANT_INDEX"] == envs["retrieval"]["QDRANT_INDEX"] == index
+    assert (
+        envs["ingestion"]["SPARSE_EMBEDDING_MODEL"]
+        == envs["retrieval"]["SPARSE_QUERY_MODEL"]
+        == model
+    )
+    assert (
+        envs["ingestion"]["SPARSE_EMBEDDING_PROVIDER"]
+        == envs["retrieval"]["SPARSE_QUERY_PROVIDER"]
+        == provider
     )
 
 
@@ -111,9 +142,18 @@ def test_windows_shell_helpers_load_compatible_builtin_modules(checkout):
     assert process.stdout.strip().lower() == hashlib.sha256(fixture.read_bytes()).hexdigest()
 
 
-def test_dynamic_ports_are_wired_into_every_backend(checkout):
+@pytest.mark.parametrize("use_candidate", [False, True])
+def test_dynamic_ports_are_wired_into_every_backend(checkout, use_candidate):
     base = launcher.prepare_environment()
     base["EMBEDDING_API_BASE_URL"] = "https://embeddings.example/v1"
+    if use_candidate:
+        base.update(
+            KNOWLEDGE_TOP_K="16",
+            INITIAL_RETRIEVAL_MULTIPLIER="5",
+            RERANK_TOP_K="16",
+            RERANK_FUSION="rrf",
+            RERANK_RRF_K="60",
+        )
     ports = {
         name: 19000 + index
         for index, name in enumerate(
@@ -129,8 +169,12 @@ def test_dynamic_ports_are_wired_into_every_backend(checkout):
     assert envs["frontend"]["WEBUI_BACKEND_URL"] == launcher.url(ports["webui"])
     assert envs["ingestion"]["API_KEY"] == base["INGESTION_API_KEY"]
     assert envs["retrieval"]["API_KEY"] == base["RETRIEVAL_API_KEY"]
-    assert envs["retrieval"]["RERANK_TOP_K"] == "3"
-    assert envs["retrieval"]["RERANK_FUSION"] == "replace"
+    assert envs["retrieval"]["RERANK_TOP_K"] == ("16" if use_candidate else "3")
+    assert envs["retrieval"]["RERANK_FUSION"] == ("rrf" if use_candidate else "replace")
+    if use_candidate:
+        assert envs["nexrag"]["KNOWLEDGE_TOP_K"] == "16"
+        assert envs["retrieval"]["INITIAL_RETRIEVAL_MULTIPLIER"] == "5"
+        assert envs["retrieval"]["RERANK_RRF_K"] == "60"
     assert envs["retrieval"]["RERANK_REQUIRED"] == "true"
     assert envs["retrieval"]["ENABLE_AGENTIC_RAG"] == "false"
     assert envs["webui"]["ENABLE_PLUGINS"] == "false"
@@ -171,7 +215,7 @@ def test_webui_security_pins_replace_upstream_instead_of_conflicting(checkout):
     lock_path.write_text(result.replace("2.15.0", "2.13.0"), encoding="utf8")
     with pytest.raises(RuntimeError, match="lock does not match"):
         locked_webui_requirements(checkout)
-    # 上游重命名或移除时，不得悄悄漏掉安全替换项。
+    # Upstream removal or renaming must not silently omit security overrides.
     (scripts / "webui-security-requirements.txt").write_text(
         "missing-package==1.0\n", encoding="utf8"
     )
@@ -230,7 +274,7 @@ def test_port_selection_avoids_existing_listener():
         try:
             busy.bind(("127.0.0.1", 3000))
         except OSError:
-            pass  # 已有应用占用了该端口。
+            pass  # An existing application already owns the port.
         ports = launcher.pick_ports()
         assert ports["web"] != 3000
         assert len(set(ports.values())) == len(ports)
@@ -277,9 +321,10 @@ def test_fast_exited_service_reports_real_exit_instead_of_job_access_denied(chec
     assign = supervisor.job.assign
 
     def after_exit(process):
+        """Provide after exit test data or behavior for this scenario."""
         process.wait(timeout=10)
-        # 确定性地复现这个竞态状态：子进程已终止后，
-        # 这次真实的 Win32 调用会返回 ERROR_ACCESS_DENIED。
+        # Reproduce the race deterministically: once the child exits,
+        # the real Win32 call returns ERROR_ACCESS_DENIED.
         assign(process)
 
     supervisor.job.assign = after_exit
@@ -302,6 +347,7 @@ def test_live_service_job_rejection_stops_child_and_does_not_bypass_isolation(ch
     started = []
 
     def reject(process):
+        """Provide reject test data or behavior for this scenario."""
         started.append(process)
         raise OSError(5, "synthetic live-process isolation refusal")
 
@@ -330,7 +376,7 @@ def test_supervisor_stops_descendant_workers(checkout):
     code = (
         "import subprocess, sys, time; from pathlib import Path; "
         "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
-        # 原子发布：仅凭 exists() 可能读到 write_text 写出的空文件。
+        # Publish atomically: exists() alone may observe an empty write_text output.
         f"marker = Path({str(marker)!r}); temporary = marker.with_suffix('.tmp'); "
         "temporary.write_text(str(p.pid)); temporary.replace(marker); time.sleep(60)"
     )

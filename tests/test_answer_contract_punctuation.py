@@ -1,4 +1,4 @@
-"""模型输出的标点必须触发重试，而不能让数值校验崩溃。"""
+"""Model punctuation must trigger retries rather than crash numeric validation."""
 
 from decimal import Decimal
 

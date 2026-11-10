@@ -1,4 +1,4 @@
-"""不可用的显式 MCP 授权，不得重放旧的工具结果。"""
+"""Unavailable explicit MCP grants must not replay stale tool results."""
 
 import asyncio
 from types import SimpleNamespace
@@ -140,7 +140,7 @@ def test_current_turn_evidence_must_match_requested_tool_identity():
 def test_approved_request_cannot_replay_history_without_current_call(
     monkeypatch, invoke_current_tool
 ):
-    """生产运行器会先绑定完成状态，再引用旧对话。"""
+    """Bind completion requirements in the production runner before consulting chat history."""
     from src.midplatform import agent_models
 
     context = UserContext(user_id="mcp-test", email="mcp-test@local", tenant_id="")
@@ -163,6 +163,7 @@ def test_approved_request_cannot_replay_history_without_current_call(
     calls = 0
 
     def provider(messages, info):
+        """Provide provider test data or behavior for this scenario."""
         nonlocal calls
         calls += 1
         if invoke_current_tool and calls == 1:

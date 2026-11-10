@@ -1,7 +1,7 @@
-"""只对比提案中确切的候选版本与其前任版本。
+"""Compare only a proposal's exact candidate and predecessor versions.
 
-prompt 与参数实验重叠时，仅凭 `canary` 标志不够，两者的样本人群可能不同。
-因此要匹配版本元数据，并要求对照组和实验组都有样本，才算观察完成。
+Overlapping prompt and parameter experiments may serve different cohorts despite canary
+flags. Match complete version metadata and require observations in both groups.
 """
 
 from __future__ import annotations
@@ -14,7 +14,9 @@ MIN_SAMPLES_PER_GROUP = 20
 
 
 def metrics_for_proposal(store, proposal: dict) -> dict[str, float]:
-    """统计灰度启动以来候选版本与基线版本各自的线上指标（成功率、用户评分、工具错误数均值及 trace 数），键形如 canary_*、control_*。"""
+    """Compute candidate and control success, ratings, tool errors, and trace counts since canary
+    start.
+    """
     since = proposal["canary_started_at"] or now()
     path = "$." + proposal["kind"]
     result = {}
@@ -24,7 +26,7 @@ def metrics_for_proposal(store, proposal: dict) -> dict[str, float]:
     ):
         predicate = "t.created_at >= ? AND json_extract(t.artifact_versions, ?) = ?"
         args = (since, path, version)
-        # 旧版本允许重复评分。每条 trace 只取最近的一票。
+        # Older versions allowed duplicate ratings; count only the latest vote per trace.
         rows = store.query(
             "SELECT name, value FROM ("
             "SELECT s.name, s.value, ROW_NUMBER() OVER ("
@@ -45,7 +47,7 @@ def metrics_for_proposal(store, proposal: dict) -> dict[str, float]:
 
 
 def enough_samples(metrics) -> bool:
-    """灰度组和对照组的 trace 数是否都达到每组最少样本数。"""
+    """Require the minimum trace count in both canary and control groups."""
     return all(
         metrics.get(f"{group}_traces", 0) >= MIN_SAMPLES_PER_GROUP
         for group in ("canary", "control")
@@ -53,7 +55,7 @@ def enough_samples(metrics) -> bool:
 
 
 def regressed_metrics(metrics, max_drop: float) -> list[str]:
-    """返回灰度组相对对照组下降超过 max_drop 的指标名（仅比较 run_success 与 user_rating）。"""
+    """Return success or rating metrics whose canary drop exceeds max_drop."""
     return [
         name
         for name in ("run_success", "user_rating")

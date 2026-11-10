@@ -1,16 +1,16 @@
-"""原生本地摄入入口使用的进程内文本提取。"""
+"""In-process extraction for native local ingestion."""
 
 from pathlib import Path
 from zipfile import ZipFile
 
-# 上传文件不可信：defusedxml 拒绝实体膨胀（billion laughs）与外部实体（XXE）。
+# Uploads are untrusted: defusedxml blocks entity expansion and external entities.
 from defusedxml import ElementTree
 
 
 def read_document(path: Path) -> str:
-    """按扩展名在进程内提取文档文本，支持 PDF、DOCX 和 UTF-8 文本类格式。
+    """Extract PDF, DOCX, and UTF-8 text by extension with hardened XML parsing.
 
-    DOCX 的 XML 超过 50 MB 或扩展名不受支持时抛出 ValueError；XML 解析使用 defusedxml 防实体攻击。
+    Reject unsupported extensions or DOCX XML over 50 MB; defusedxml blocks entity attacks.
     """
     suffix = path.suffix.lower()
     if suffix == ".pdf":

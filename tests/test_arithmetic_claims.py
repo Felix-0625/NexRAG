@@ -1,4 +1,4 @@
-"""针对公开 FinQA 运行中出现的错误百分比结论的回归用例。"""
+"""Regressions for incorrect percentage claims observed in public FinQA runs."""
 
 import asyncio
 
@@ -45,6 +45,7 @@ def test_actual_agent_retries_false_percent_and_preserves_source_units_and_expla
     step = 0
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal step
         step += 1
         if step == 1:
@@ -78,6 +79,7 @@ def test_actual_agent_retries_false_percent_and_preserves_source_units_and_expla
     ]
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 "仅检索知识库，计算差值，不查询业务数据库，不联网，不导出。",

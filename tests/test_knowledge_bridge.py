@@ -1,4 +1,4 @@
-"""对照 AarhusAI 的 /search 通信约定检查 NexRAG 适配器。"""
+"""Check NexRAG against the AarhusAI search protocol."""
 
 import asyncio
 import json
@@ -13,6 +13,7 @@ from src.agent.tools import search_knowledge
 
 def test_knowledge_search_preserves_source_and_scores():
     def respond(request: httpx.Request) -> httpx.Response:
+        """Return a deterministic mocked HTTP response."""
         assert request.url.path == "/search"
         assert request.headers["Authorization"] == "Bearer retrieval-test-key"
         assert json.loads(request.read()) == {
@@ -30,6 +31,7 @@ def test_knowledge_search_preserves_source_and_scores():
         )
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             return await search_knowledge(
                 "What is the warranty?",
@@ -51,10 +53,11 @@ def test_knowledge_search_preserves_source_and_scores():
 
 
 def test_agent_document_tool_uses_authorized_knowledge_without_seller_filter(monkeypatch):
-    """已注册的智能体工具必须返回来源，并计入真实的检索证据。"""
+    """Registered retrieval tools return sources and count genuine retrieval evidence."""
     seen = {}
 
     async def fake_search(query, *, base_url, api_key, collection_name, top_k=3):
+        """Provide fake search test data or behavior for this scenario."""
         seen.update(query=query, collection_name=collection_name)
         return [{"source": "warranty.md", "content": "Warranty text", "score": 0.91}]
 
@@ -68,6 +71,7 @@ def test_agent_document_tool_uses_authorized_knowledge_without_seller_filter(mon
     )
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with agent.override(
             model=TestModel(
                 call_tools=["search_knowledge_documents"],

@@ -1,4 +1,4 @@
-"""运维接口（仅管理员）、记忆接口（仅本人）、反馈与追踪的 HTTP 边界。"""
+"""HTTP boundaries for admin operations, owned memory, feedback, and tracing."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ SECRET = "a" * 32
 
 
 def headers(sub="user-1", role="user", email="viewer@example.local"):
+    """Build signed request headers for the test identity."""
     claims = {
         "sub": sub,
         "email": email,
@@ -43,6 +44,7 @@ def headers(sub="user-1", role="user", email="viewer@example.local"):
 
 @pytest.fixture
 def client(monkeypatch):
+    """Provide an isolated HTTP client for the test application."""
     monkeypatch.setattr(settings, "NEXRAG_SHARED_API_KEY", KEY)
     monkeypatch.setattr(settings, "NEXRAG_USER_JWT_SECRET", SECRET)
     return TestClient(app)
@@ -50,6 +52,7 @@ def client(monkeypatch):
 
 @pytest.fixture
 def memory(isolated_ops, embedder, monkeypatch):
+    """Provide memory test data or behavior for this scenario."""
     monkeypatch.setattr(settings, "ENABLE_MEMORY", True)
     monkeypatch.setattr(settings, "EMBEDDING_API_BASE_URL", "http://localhost:11434/v1")
     service = MemoryService(isolated_ops, InMemoryVectorIndex(), embedder)
@@ -84,7 +87,7 @@ def test_memory_api_is_strictly_per_user(client, memory):
     asyncio.run(memory.write(pref, MemoryScope("user-1", "t1")))
     mine = client.get("/v1/memory", headers=headers("user-1")).json()["data"]
     assert [m["value"] for m in mine] == ["Chinese"]
-    # 其他用户（即使是管理员）也看不到它，更无法删除。
+    # Other users, including administrators, can neither see nor delete this memory.
     assert client.get("/v1/memory", headers=headers("user-2", role="admin")).json()["data"] == []
     assert (
         client.delete(
@@ -133,9 +136,11 @@ def test_feedback_only_on_own_trace(client, isolated_ops):
 
 def test_agent_run_records_trace_and_ingests_memory(isolated_ops, memory, monkeypatch):
     async def fake_search(query, *, base_url, api_key, collection_name, client=None, top_k=3):
+        """Provide fake search test data or behavior for this scenario."""
         return [{"source": "seller-metrics.md", "content": "price only", "score": 0.9}]
 
     async def completer(_system, _user):
+        """Provide completer test data or behavior for this scenario."""
         return (
             '{"items": [{"scope": "global", "kind": "preference", "subject": "user", "attribute": "answer language",'
             ' "value": "Chinese", "explicit": true, "confidence": 0.9, "importance": 6}]}'
@@ -150,6 +155,7 @@ def test_agent_run_records_trace_and_ingests_memory(isolated_ops, memory, monkey
     )
 
     async def go():
+        """Provide go test data or behavior for this scenario."""
         with runner._agent.override(
             model=TestModel(
                 call_tools=["search_knowledge_documents"], custom_output_text="price only"
@@ -172,7 +178,7 @@ def test_agent_run_records_trace_and_ingests_memory(isolated_ops, memory, monkey
     observations = isolated_ops.query("SELECT name, type FROM observations WHERE trace_id = 'tr-1'")
     assert {"name": "search_knowledge_documents", "type": "retrieval"} in observations
     assert [r.value_text for r in memory.store.list_for_user("user-1")] == ["Chinese"]
-    # 下一次运行会在指令中看到这条记忆。
+    # The next run must receive this memory in its instructions.
     deps, _ = asyncio.run(runner._prepare("answer language", context))
     assert "Chinese" in deps.memory_block
 

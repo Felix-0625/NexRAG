@@ -1,4 +1,4 @@
-"""需认证的模型管理接口；服务商密钥不会离开本后端。"""
+"""Authenticated model administration that never exposes provider secrets."""
 
 import asyncio
 
@@ -14,7 +14,9 @@ router = APIRouter(prefix="/workspace/models", tags=["agent-models"])
 
 @router.get("")
 def list_models(principal: Principal = Depends(get_principal)):
-    """列出当前账号可用的模型；管理员看到全部模型及接口地址等管理字段，普通用户只看到分发给自己的已启用模型。"""
+    """List distributed enabled models; administrators also receive management fields and all
+    models.
+    """
     return {
         "data": [
             agent_models.public_model(row, admin=principal.role == "admin")
@@ -26,7 +28,9 @@ def list_models(principal: Principal = Depends(get_principal)):
 
 @router.post("")
 def add_model(body: agent_models.ModelForm, _: Principal = Depends(require_admin)):
-    """管理员新增一个模型；密钥加密保存，响应不返回密钥，校验失败返回 400。"""
+    """Create a model with encrypted credentials; return no secret and reject invalid input with
+    400.
+    """
     try:
         return agent_models.save_model(body)
     except ValueError as exc:
@@ -37,7 +41,9 @@ def add_model(body: agent_models.ModelForm, _: Principal = Depends(require_admin
 def update_model(
     identifier: str, body: agent_models.ModelForm, _: Principal = Depends(require_admin)
 ):
-    """管理员更新指定模型；更换厂商或接口地址时必须重新填写或明确清除旧密钥，否则返回 400。"""
+    """Update a model, requiring replacement or explicit clearing of credentials after endpoint
+    changes.
+    """
     try:
         return agent_models.save_model(body, identifier)
     except ValueError as exc:
@@ -46,7 +52,9 @@ def update_model(
 
 @router.post("/{identifier}/default")
 def default_model(identifier: str, _: Principal = Depends(require_admin)):
-    """管理员把指定模型设为系统默认；该模型须存在、已启用且对全体账号可用，否则返回 400。"""
+    """Set an enabled model available to all accounts as default, rejecting invalid choices with
+    400.
+    """
     try:
         agent_models.set_default(identifier)
         return {"ok": True}
@@ -56,7 +64,9 @@ def default_model(identifier: str, _: Principal = Depends(require_admin)):
 
 @router.post("/{identifier}/test")
 async def test_model(identifier: str, _: Principal = Depends(require_admin)):
-    """管理员测试指定模型能否连通并成功发起工具调用（30 秒超时）；失败只返回概括信息，不泄露密钥或上游响应。"""
+    """Test connectivity and tool calling within 30 seconds without exposing secrets or upstream
+    errors.
+    """
     try:
         record = agent_models.resolve_model(identifier, enabled_only=False)
         called = False
@@ -81,7 +91,7 @@ async def test_model(identifier: str, _: Principal = Depends(require_admin)):
     except HTTPException:
         raise
     except Exception as exc:
-        # SDK 异常可能含凭据或响应体，不得向外转发。
+        # SDK exceptions may contain credentials or response bodies; never forward them.
         code = getattr(exc, "status_code", None)
         detail = f"（HTTP {code}）" if isinstance(code, int) else ""
         raise HTTPException(

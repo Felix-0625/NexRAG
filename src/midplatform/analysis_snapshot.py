@@ -1,7 +1,7 @@
-"""一个 Agent 轮次共用的有界、不可变租户快照。
+"""One bounded immutable tenant snapshot per agent turn.
 
-返回该对象时源连接已关闭。SQL 只在私有副本上执行；工具参数和并行调用都无法
-替换其租户。锁允许工作线程按顺序使用。
+Source connections are already closed. SQL runs only on the private copy; arguments and
+parallel calls cannot replace its tenant. A lock serializes worker-thread access.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ ALLOWED_FUNCTIONS = frozenset(
 
 
 def authorize_analysis(action, _arg1, arg2, _database, _source):
-    """SQLite 授权回调：只放行 SELECT 与读取，函数仅限白名单，其余操作一律拒绝。"""
+    """Allow SQLite SELECT and reads with allowlisted functions only."""
     if action == sqlite3.SQLITE_FUNCTION:
         return (
             sqlite3.SQLITE_OK if (arg2 or "").lower() in ALLOWED_FUNCTIONS else sqlite3.SQLITE_DENY
@@ -50,7 +50,7 @@ def authorize_analysis(action, _arg1, arg2, _database, _source):
 
 
 def validate_query(sql, views, max_rows=100, timeout_seconds=2.0):
-    """校验行数上限（1 至 1000）和超时（至多 30 秒），并用 SQL 安全守卫与语义检查限定在给定视图内，返回安全的 SQL；不合规抛出异常。"""
+    """Validate row and timeout bounds plus SQL safety and semantics."""
     if not 1 <= max_rows <= 1_000:
         raise ValueError("max_rows must be between 1 and 1000")
     if not 0 < timeout_seconds <= 30:
@@ -61,6 +61,8 @@ def validate_query(sql, views, max_rows=100, timeout_seconds=2.0):
 
 
 class AnalysisSnapshot:
+    """Locked private tenant copy used for read-only analytical queries."""
+
     def __init__(self, connection: sqlite3.Connection, tenant_id: str, views):
         self.id = uuid4().hex
         self.tenant_id = tenant_id
@@ -73,9 +75,10 @@ class AnalysisSnapshot:
         connection.set_authorizer(authorize_analysis)
 
     def execute_query(self, sql, tenant_id, *, max_rows=100, timeout_seconds=2.0):
-        """在本快照上执行一条只读查询并返回行字典列表。
+        """Execute read-only SQL and return row dictionaries.
 
-        租户与快照不一致、快照已关闭、结果超过 max_rows 均抛出 ValueError，超时抛出 TimeoutError。
+        Reject tenant mismatch, closed snapshots, and oversized results with ValueError;
+        raise TimeoutError when the execution budget expires.
         """
         if tenant_id != self.tenant_id:
             raise ValueError("A snapshot cannot be reused for another tenant")
@@ -101,7 +104,7 @@ class AnalysisSnapshot:
             return [dict(row) for row in rows]
 
     def close(self):
-        """关闭底层连接；可重复调用，之后不能再执行查询。"""
+        """Idempotently close the connection and reject subsequent queries."""
         with self._lock:
             if not self._closed:
                 self._closed = True

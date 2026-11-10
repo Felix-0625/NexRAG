@@ -1,8 +1,7 @@
-"""在提供专用测试 DSN 时，验证真实的 PostgreSQL 数据源。
+"""Exercise real PostgreSQL only with a dedicated test DSN.
 
-预期的测试库包含 companies(company_id) 与
-invoices(id, company_id, amount_cents)，并带有 company-a 与 company-b 的夹具数据。
-本地验证的准备方法见 docs/connect-business-database.md。
+Require companies(company_id) and invoices(id, company_id, amount_cents) with company-a
+and company-b fixtures. Setup is documented in docs/connect-business-database.md.
 """
 
 import os

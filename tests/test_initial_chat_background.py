@@ -1,4 +1,4 @@
-"""初始对话的后台任务必须拿到已解析的模型上下文。"""
+"""Initial-chat background tasks must receive resolved model context."""
 
 import ast
 import asyncio
@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock
 
 
 def test_real_initial_title_context_can_run_actual_background_handler():
-    # 只加载生产环境的上下文表达式和处理函数，避免在核心回归进程里
-    # 再启动一个 WebUI 应用和数据库。
+    # Load only shipped context expressions and handlers to avoid starting
+    # another WebUI application and database in the core regression process.
     main = ast.parse(Path("webui/backend/open_webui/main.py").read_text("utf8"))
     assignment = next(
         node
@@ -66,5 +66,5 @@ def test_real_initial_title_context_can_run_actual_background_handler():
     chats.update_chat_title_by_id.assert_awaited_once_with("synthetic-chat", "Synthetic greeting")
     review.assert_awaited_once()
     assert review.await_args.kwargs["model"] is model
-    # 初始标题生成不会凭空造出一条已完成的助手回合。
+    # Initial title generation must not invent a completed assistant turn.
     assert review.await_args.kwargs["assistant_message"] == {}

@@ -1,4 +1,4 @@
-"""验证已发布的本地识别器与路由，不下载内容，也不调用外部服务。"""
+"""Exercise shipped local speech recognition and routes without downloads or external calls."""
 
 import ast
 import asyncio
@@ -20,6 +20,7 @@ BACKEND = Path(__file__).resolve().parents[1] / "webui/backend/open_webui"
 
 @pytest.fixture
 def recognizer(monkeypatch):
+    """Provide recognizer test data or behavior for this scenario."""
     spec = importlib.util.spec_from_file_location(
         "local_stt_under_test", BACKEND / "utils/nexrag_local_stt.py"
     )
@@ -30,6 +31,7 @@ def recognizer(monkeypatch):
 
 
 def load(module, model="tiny", **kwargs):
+    """Provide load test data or behavior for this scenario."""
     return module.load_local_whisper(
         model,
         slim=True,
@@ -49,6 +51,7 @@ def test_slim_requires_explicit_native_opt_in(recognizer, monkeypatch):
 
 def test_missing_dependency_is_actionable_local_error(recognizer, monkeypatch):
     def unavailable(_):
+        """Provide unavailable test data or behavior for this scenario."""
         raise ImportError("no faster_whisper")
 
     monkeypatch.setattr(recognizer.importlib, "import_module", unavailable)
@@ -58,6 +61,7 @@ def test_missing_dependency_is_actionable_local_error(recognizer, monkeypatch):
 
 
 def install_model(recognizer, monkeypatch, factory, downloader=None):
+    """Provide install model test data or behavior for this scenario."""
     downloader = downloader or (lambda model, **kwargs: str(Path("cache", model).resolve()))
     monkeypatch.setattr(
         recognizer.importlib,
@@ -74,6 +78,7 @@ def test_parallel_first_use_loads_one_cpu_int8_model(recognizer, monkeypatch):
     calls = []
 
     def factory(**kwargs):
+        """Provide factory test data or behavior for this scenario."""
         calls.append(kwargs)
         time.sleep(0.02)
         return object()
@@ -93,6 +98,7 @@ def test_missing_weights_retry_download_and_failed_change_preserves_cache(recogn
     model = object()
 
     def download(name, **kwargs):
+        """Provide download test data or behavior for this scenario."""
         calls.append((name, kwargs.copy()))
         if name == "bad" or kwargs["local_files_only"]:
             raise RuntimeError("weights unavailable")
@@ -114,6 +120,7 @@ def test_catalog_name_does_not_resolve_to_checkout_base(recognizer, monkeypatch,
     downloads, constructors = [], []
 
     def download(name, **kwargs):
+        """Provide download test data or behavior for this scenario."""
         downloads.append(name)
         return str(snapshot)
 
@@ -151,6 +158,7 @@ def test_lazy_inference_is_serialized(recognizer):
     counter = threading.Lock()
 
     def segments():
+        """Provide segments test data or behavior for this scenario."""
         nonlocal active, maximum
         with counter:
             active += 1
@@ -172,6 +180,7 @@ def test_lazy_inference_is_serialized(recognizer):
 
 
 def shipped_function(name, namespace):
+    """Provide shipped function test data or behavior for this scenario."""
     tree = ast.parse((BACKEND / "routers/audio.py").read_text("utf8"))
     node = next(
         node
@@ -194,6 +203,7 @@ async def test_local_pyav_bypass_does_not_change_external_preprocessing(
     calls = []
 
     async def handler(*args):
+        """Provide handler test data or behavior for this scenario."""
         calls.append(args[1])
         return {"text": "recognized"}
 
@@ -227,6 +237,7 @@ async def test_failed_local_config_does_not_persist_broken_engine():
     upsert = AsyncMock()
 
     def fail(*args):
+        """Provide fail test data or behavior for this scenario."""
         raise HTTPException(503, "本地语音模型加载失败")
 
     namespace = dict(

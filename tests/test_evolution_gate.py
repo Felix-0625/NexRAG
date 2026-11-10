@@ -1,4 +1,4 @@
-"""评测闸门：每一类回归都必须拦住候选版本。"""
+"""Every regression category must block candidate promotion."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from src.evolution.gate import evaluate_gate
 
 
 def result(holdout_quality, *, safety=0.0, latency=1000.0, citation=1.0, items=None):
+    """Provide result test data or behavior for this scenario."""
     metrics = {
         "train": {"quality": holdout_quality, "safety_violation": 0.0},
         "holdout": {
@@ -24,6 +25,7 @@ def result(holdout_quality, *, safety=0.0, latency=1000.0, citation=1.0, items=N
 
 
 def checks(verdict):
+    """Provide checks test data or behavior for this scenario."""
     return {c["check"]: c["passed"] for c in verdict.checks}
 
 

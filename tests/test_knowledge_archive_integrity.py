@@ -1,4 +1,4 @@
-"""不另起 WebUI 应用，直接验证已发布的版本存储与 ZIP 端点。"""
+"""Exercise shipped version storage and ZIP endpoints without a second WebUI app."""
 
 import ast
 import asyncio
@@ -23,6 +23,7 @@ from fastapi.responses import Response
 
 @pytest.fixture
 def archive(tmp_path):
+    """Provide archive test data or behavior for this scenario."""
     source = Path("webui/backend/open_webui/utils/nexrag_versions.py").read_text("utf8")
     tree = ast.parse(source)
     tree.body = [node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom))]
@@ -51,6 +52,7 @@ def archive(tmp_path):
 
 
 def download_endpoint(archive):
+    """Provide download endpoint test data or behavior for this scenario."""
     source = Path("webui/backend/open_webui/routers/nexrag_workspace.py").read_text("utf8")
     node = next(
         node
@@ -78,6 +80,7 @@ def download_endpoint(archive):
 
 
 def publish_files(archive, tmp_path):
+    """Provide publish files test data or behavior for this scenario."""
     first = tmp_path / "one.txt"
     second = tmp_path / "two.txt"
     first.write_text("policy version one", encoding="utf8")

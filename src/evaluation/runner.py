@@ -1,7 +1,7 @@
-"""用固定的产物版本让 Agent 跑数据集条目（Langfuse 的 "experiment"）。
+"""Evaluate dataset entries against pinned artifacts without changing production labels.
 
-runner 从不改动线上标签：它只评估显式给定的 prompt/params 内容，
-因此候选与 production 可在相同条目、模型和温度下比较。结果以 experiment run 存储。
+Compare candidate and production guidance and parameters on identical entries, models,
+and temperatures; persist outcomes as experiment runs.
 """
 
 from __future__ import annotations
@@ -20,15 +20,17 @@ from src.midplatform.ops_store import OpsStore, dumps, get_ops_store, new_id, no
 
 @dataclass
 class ExperimentResult:
+    """Per-entry outcomes and split-level aggregate experiment scores."""
+
     run_id: str
-    metrics: dict[str, dict[str, float]]  # 划分 -> 指标 -> 均值
+    metrics: dict[str, dict[str, float]]
     item_scores: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 def outcome_from_messages(
     answer: str, messages, *, latency_ms: float, status: str = "ok"
 ) -> RunOutcome:
-    """从一次运行的消息历史中收集工具、SQL 行、来源和错误。"""
+    """Collect tools, SQL rows, sources, and failures from a run's message history."""
     outcome = RunOutcome(answer=answer or "", latency_ms=latency_ms, status=status)
     for message in messages:
         if not isinstance(message, ModelRequest):
@@ -53,16 +55,16 @@ def outcome_from_messages(
     return outcome
 
 
-# task 把 (条目, prompt 指引, 参数) 映射为 RunOutcome。默认 task 运行真实 Agent；
-# 测试则注入确定性的 task。
+# The default task maps entries, guidance, and parameters to real-agent outcomes;
+# tests inject deterministic tasks instead.
 Task = Callable[[DatasetItem, str, dict[str, Any]], Awaitable[RunOutcome]]
 
 
 async def agent_task(item: DatasetItem, guidance: str, params: dict[str, Any]) -> RunOutcome:
-    """用给定的 prompt 与参数在隔离的合成 fixture 上运行真实 Agent，返回可打分的结果。
+    """Run the real agent on an isolated synthetic fixture using explicit guidance and parameters.
 
-    非合成、带来源对话或租户不在固定合成租户内的条目一律拒绝（返回 error 结果），不会接触真实业务数据；
-    运行失败也作为结果返回，并记录源库是否被改动。
+    Reject nonsynthetic entries, conversation provenance, and tenants outside the fixed
+    fixture. Return failures as scoreable outcomes and record source integrity.
     """
     from src.agent.agent import UserContext, runner
     from src.agent.execution import EvaluationRun
@@ -90,7 +92,7 @@ async def agent_task(item: DatasetItem, guidance: str, params: dict[str, Any]) -
     started = time.monotonic()
     try:
         answer = await runner.run(item.input, context, evaluation=execution)
-    except Exception as exc:  # noqa: BLE001 - 失败的运行也是一个会被打分的结果
+    except Exception as exc:  # noqa: BLE001 - Failed runs are scoreable outcomes.
         outcome = outcome_from_messages(
             str(exc),
             execution.messages,
@@ -144,7 +146,7 @@ async def run_experiment(
     store: OpsStore | None = None,
     record_synthetic_failures: bool = False,
 ) -> ExperimentResult:
-    """评估一组产物配置；重复运行的结果按条目取平均。"""
+    """Evaluate an artifact configuration, averaging repeated runs per entry."""
     store = store or get_ops_store()
     per_item: dict[str, dict[str, float]] = {}
     for item in items:
@@ -162,12 +164,12 @@ async def run_experiment(
         per_item[item.id] = {
             key: statistics.fmean(run[key] for run in runs if key in run) for key in names
         }
-        # 安全取最坏情况：任何一次重复违规都计入。
+        # Use the worst safety outcome: any repeated violation counts.
         per_item[item.id]["safety_violation"] = max(run["safety_violation"] for run in runs)
         if worst_outcome is not None:
             from src.evaluation.synthetic import record_synthetic_failure
 
-            # 失败证据应来自实际失败的那次运行，即使最后一次重试通过。
+            # Retain evidence from an actual failed run even if the last retry passed.
             record_synthetic_failure(item, worst_outcome, per_item[item.id]["quality"], store)
     metrics = _aggregate(per_item, items)
     run_id = new_id()
@@ -185,10 +187,10 @@ async def run_synthetic_experiment(
     model_id: str | None = None,
     store: OpsStore | None = None,
 ) -> ExperimentResult:
-    """面向管理后台的安全入口：固定 fixture、本地模型、不接触真实数据。
+    """Expose a safe administrative evaluation entry point with fixed fixtures and local models.
 
-    UI 只能选择已知的数据划分和已注册的本地模型，不能传入
-    task callable、adapter、数据源路径、知识范围或 DSN。
+    The UI selects known splits and registered local models, never task callables, adapters,
+    source paths, knowledge scopes, or DSNs.
     """
     from src.evaluation import datasets
     from src.evaluation.validation import validate_expected

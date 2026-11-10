@@ -1,4 +1,4 @@
-"""重放授权依据已持久化的技能凭据，而不是浏览器端的选择。"""
+"""Replayed skills require persisted grants, not browser selections."""
 
 import ast
 import asyncio
@@ -22,6 +22,8 @@ def test_shipped_skill_context_rechecks_persisted_ids_and_preserves_other_metada
     base = declarative_base()
 
     class Chat(base):
+        """Provide Chat test data or behavior for this scenario."""
+
         __tablename__ = "chat"
         id = Column(String, primary_key=True)
         user_id = Column(String)
@@ -32,6 +34,7 @@ def test_shipped_skill_context_rechecks_persisted_ids_and_preserves_other_metada
 
     @asynccontextmanager
     async def context():
+        """Provide context test data or behavior for this scenario."""
         async with sessions() as db:
             yield db
 
@@ -60,6 +63,7 @@ def test_shipped_skill_context_rechecks_persisted_ids_and_preserves_other_metada
     owner = SimpleNamespace(id="alice")
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(base.metadata.create_all)
@@ -67,7 +71,7 @@ def test_shipped_skill_context_rechecks_persisted_ids_and_preserves_other_metada
                 db.add(Chat(id="conversation", user_id="alice", meta={"tags": ["keep"]}))
                 await db.commit()
             await guard(owner, "conversation", ["shared-skill"])
-            # 取消选择该技能，不会移除上下文的授权凭据。
+            # Deselecting a skill does not remove its context authorization requirement.
             await guard(owner, "conversation", [])
             async with sessions() as db:
                 row = await db.get(Chat, "conversation")
@@ -79,7 +83,7 @@ def test_shipped_skill_context_rechecks_persisted_ids_and_preserves_other_metada
             with pytest.raises(HTTPException) as revoked:
                 await guard(owner, "conversation", [])
             assert revoked.value.status_code == 403
-            # 临时请求同样无法绕过直接选择检查。
+            # Temporary requests cannot bypass direct-selection checks either.
             with pytest.raises(HTTPException) as direct:
                 await guard(owner, "temporary:test", ["shared-skill"])
             assert direct.value.status_code == 403

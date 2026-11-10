@@ -1,4 +1,4 @@
-"""沙箱文件检查与安全边界的测试。"""
+"""Sandboxed file inspection and security boundaries."""
 
 from pathlib import Path
 
@@ -15,7 +15,7 @@ from src.midplatform.sandbox_file import (
 
 
 def test_path_traversal_prevention(tmp_path: Path):
-    """解析到允许根目录之外的路径必须被拦截。"""
+    """Reject paths resolving outside the allowed root."""
     outside_file = tmp_path.parent / "secret.txt"
     outside_file.write_text("outside data", encoding="utf-8")
 
@@ -24,10 +24,10 @@ def test_path_traversal_prevention(tmp_path: Path):
 
 
 def test_sandbox_root_is_a_dedicated_directory_not_the_cwd(tmp_path, monkeypatch):
-    """inspect_temporary_file 必须使用 settings.SANDBOX_ROOT_DIR，而不是进程当前目录。
+    """Require SANDBOX_ROOT_DIR rather than the working directory.
 
-    若这里出现回归，服务在其容器空工作目录之外运行时，
-    智能体就可能读到应用源码和配置文件。
+    Otherwise running outside an empty container directory can expose application source and
+    configuration.
     """
     from src.config import settings
 
@@ -36,8 +36,8 @@ def test_sandbox_root_is_a_dedicated_directory_not_the_cwd(tmp_path, monkeypatch
     sample = sandbox_dir / "metrics.csv"
     sample.write_text("a,b\n1,2\n", encoding="utf-8")
 
-    # 沙箱之外的文件（例如与 cwd 相似的无关目录）
-    # 即使恰好与进程当前目录相同，也绝不能被访问到。
+    # Files outside the sandbox must remain inaccessible
+    # even if their directory happens to be the process working directory.
     outside = tmp_path / "config.yaml"
     outside.write_text("secret: value", encoding="utf-8")
 
@@ -52,7 +52,7 @@ def test_sandbox_root_is_a_dedicated_directory_not_the_cwd(tmp_path, monkeypatch
 
 
 def test_forbidden_sensitive_patterns(tmp_path: Path):
-    """检查 .env、.git 或数据库/密钥文件的尝试必须被拦截。"""
+    """Reject sensitive environment, Git, database, and key files."""
     env_file = tmp_path / ".env"
     env_file.write_text("SECRET=123", encoding="utf-8")
     with pytest.raises(FileSandboxSecurityError, match="sensitive path component"):
@@ -70,7 +70,7 @@ def test_forbidden_sensitive_patterns(tmp_path: Path):
 
 
 def test_inspect_tabular_csv(tmp_path: Path):
-    """CSV 表格检查会返回表头、行数和示例记录。"""
+    """CSV inspection returns headers, row counts, and samples."""
     csv_file = tmp_path / "orders.csv"
     csv_file.write_text(
         "order_id,amount,status\n"
@@ -90,7 +90,7 @@ def test_inspect_tabular_csv(tmp_path: Path):
 
 
 def test_inspect_json_array_and_object(tmp_path: Path):
-    """JSON 数组与对象会被检查并整理成结构化摘要。"""
+    """JSON inspection returns structured array and object summaries."""
     json_array_file = tmp_path / "items.json"
     json_array_file.write_text(
         '[{"id": 1, "name": "item1"}, {"id": 2, "name": "item2"}]',
@@ -111,7 +111,7 @@ def test_inspect_json_array_and_object(tmp_path: Path):
 
 
 def test_inspect_text_file_pagination(tmp_path: Path):
-    """文本文件按行数上限分页，避免撑满上下文。"""
+    """Paginate text by line limits to avoid context overflow."""
     log_file = tmp_path / "app.log"
     log_file.write_text("\n".join(f"Line {i}" for i in range(1, 21)), encoding="utf-8")
 
@@ -128,9 +128,10 @@ def test_inspect_text_file_pagination(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_agent_inspect_local_file_tool(monkeypatch):
-    """智能体工具 inspect_local_file 能安全执行，并使证据计数加一。"""
+    """Safe agent file inspection adds one evidence call."""
 
     def fake_inspect(file_path, **kwargs):
+        """Provide fake inspect test data or behavior for this scenario."""
         return {"format": "tabular", "columns": ["metric", "value"], "total_rows": 2}
 
     from src.agent import core_tools
@@ -143,7 +144,7 @@ async def test_agent_inspect_local_file_tool(monkeypatch):
     context = UserContext(user_id="u1", email="test@example.com", tenant_id="t1")
     deps = AgentDeps(context=context)
 
-    # 让智能体通过 TestModel 调用 inspect_local_file
+    # Exercise the registered inspection tool through TestModel.
     test_model = TestModel(call_tools=["inspect_local_file"])
     with agent.override(model=test_model):
         result = await agent.run(

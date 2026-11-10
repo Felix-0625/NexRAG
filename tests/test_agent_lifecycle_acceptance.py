@@ -1,7 +1,8 @@
-"""生产与评测一致、上下文有界，以及共享学习输入的安全性。"""
+"""Production/evaluation parity, bounded context, and safe shared-learning inputs."""
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -40,9 +41,11 @@ def test_complete_parents_retained_under_explicit_context_budget():
     assert bound_documents([parent], char_budget=100) == []
 
 
-def test_retrieval_wrapper_uses_parameter_and_keeps_parent_text():
+@pytest.mark.parametrize("top_k", [2, 16])
+def test_retrieval_wrapper_uses_parameter_and_keeps_parent_text(top_k):
     def respond(request):
-        assert json.loads(request.content)["k"] == 2
+        """Return a deterministic mocked HTTP response."""
+        assert json.loads(request.content)["k"] == top_k
         return httpx.Response(
             200,
             json={
@@ -53,6 +56,7 @@ def test_retrieval_wrapper_uses_parameter_and_keeps_parent_text():
         )
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             return await search_knowledge(
                 "q",
@@ -60,11 +64,33 @@ def test_retrieval_wrapper_uses_parameter_and_keeps_parent_text():
                 api_key="test",
                 collection_name=["kb"],
                 client=client,
-                top_k=2,
+                top_k=top_k,
             )
 
     result = asyncio.run(run())
     assert len(result[0]["content"]) == 5000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("override, stored, expected", [(16, 3, 16), (None, 3, 3), (None, 16, 16)])
+async def test_knowledge_request_uses_deployment_override_or_stored_k(
+    monkeypatch, override, stored, expected
+):
+    from src.agent import core_tools
+    from src.agent.dependencies import AgentDeps
+
+    monkeypatch.setattr(settings, "KNOWLEDGE_TOP_K", override)
+    monkeypatch.setattr(settings, "RETRIEVAL_API_BASE_URL", "http://127.0.0.1:8002")
+    monkeypatch.setattr(core_tools, "refresh_policy", AsyncMock())
+    search = AsyncMock(return_value=[])
+    monkeypatch.setattr(core_tools, "search_knowledge", search)
+    context = UserContext(
+        user_id="u", email="u@example.invalid", tenant_id="", knowledge_scopes=["kb"]
+    )
+    deps = AgentDeps(context=context, params={"knowledge_top_k": stored})
+    await core_tools._retrieve_documents(SimpleNamespace(deps=deps), "policy")
+    assert search.await_args.kwargs["top_k"] == expected
+    assert search.await_args.kwargs["collection_name"] == ["kb"]
 
 
 def test_evaluation_uses_same_required_evidence_and_does_not_record_user_memory(
@@ -79,6 +105,7 @@ def test_evaluation_uses_same_required_evidence_and_does_not_record_user_memory(
     monkeypatch.setattr(agent_module, "runner", runner)
 
     async def docs(*a, **kw):
+        """Provide docs test data or behavior for this scenario."""
         return [{"source": "policy.md", "content": "Synthetic policy."}]
 
     monkeypatch.setattr(core_tools, "search_knowledge", docs)
@@ -93,6 +120,7 @@ def test_evaluation_uses_same_required_evidence_and_does_not_record_user_memory(
     )
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(
             model=TestModel(
                 call_tools=["search_knowledge_documents"], custom_output_text="订单总金额18000。"
@@ -173,6 +201,7 @@ def test_default_denied_web_tool_sends_no_query(monkeypatch):
     deps = AgentDeps(UserContext(user_id="u", email="u@local", tenant_id="t1"))
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with agent.override(
             model=TestModel(
                 call_tools=["search_web_engine"],
@@ -223,6 +252,7 @@ def test_synthetic_evaluation_never_calls_live_business_or_retrieval(monkeypatch
     from src.agent import core_tools
 
     def forbidden(*args, **kwargs):
+        """Provide forbidden test data or behavior for this scenario."""
         raise AssertionError("Synthetic evaluation touched a live dependency")
 
     monkeypatch.setattr(core_tools, "query_business", forbidden)
@@ -235,6 +265,7 @@ def test_synthetic_evaluation_never_calls_live_business_or_retrieval(monkeypatch
     calls = []
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         calls.append(len(messages))
         if len(calls) == 1:
             return ModelResponse(
@@ -259,6 +290,7 @@ def test_synthetic_evaluation_never_calls_live_business_or_retrieval(monkeypatch
     )
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await agent_task(item, "Use evidence.", {})
 
@@ -291,4 +323,7 @@ def test_synthetic_samples_reject_real_resource_scopes():
 def test_legacy_retrieval_budget_can_still_generate_effective_neighbours():
     from src.evolution.proposer import param_neighbours
 
-    assert {"knowledge_top_k": 2} in param_neighbours({"knowledge_top_k": 5}, ["knowledge_top_k"])
+    assert {"knowledge_top_k": 19} in param_neighbours(
+        {"knowledge_top_k": 100}, ["knowledge_top_k"]
+    )
+    assert {"knowledge_top_k": 16} in param_neighbours({"knowledge_top_k": 15}, ["knowledge_top_k"])

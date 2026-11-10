@@ -1,7 +1,7 @@
-"""列出并下载 Agent 导出的分析文件。
+"""List and download agent-generated analysis files.
 
-可见性与记忆采用同一条硬边界：已登录用户只能看到自己的导出文件
-（``Principal.user_id``），与角色无关。
+As with memory, authenticated users see only their own exports by Principal.user_id,
+regardless of administrator role.
 """
 
 from __future__ import annotations
@@ -18,13 +18,15 @@ router = APIRouter(prefix="/exports", tags=["exports"])
 
 @router.get("")
 def list_my_exports(chat_id: str | None = None, principal: Principal = Depends(get_principal)):
-    """列出当前登录用户自己的导出文件，可按对话 ID 过滤；看不到他人的文件。"""
+    """List only the caller's exports, optionally filtered by conversation ID."""
     return {"data": list_exports(principal.user_id, chat_id)}
 
 
 @router.get("/download/{relative_path:path}")
 def download_export(relative_path: str, principal: Principal = Depends(get_principal)):
-    """下载当前登录用户自己的导出文件；路径越出其个人目录或文件不存在时一律返回 404。"""
+    """Download only the caller's export; return 404 for missing files or paths outside their
+    directory.
+    """
     root = export_root()
     target = (root / relative_path).resolve()
     user_root = (root / principal.user_id).resolve()

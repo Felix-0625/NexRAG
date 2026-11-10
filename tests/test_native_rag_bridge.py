@@ -1,4 +1,4 @@
-"""不启动元数据库，直接测试生成出的 WebUI 桥接代码。"""
+"""Test generated WebUI bridge code without starting its metadata database."""
 
 import ast
 import asyncio
@@ -12,6 +12,7 @@ import pytest
 
 @pytest.fixture
 def bridge(tmp_path, monkeypatch):
+    """Provide bridge test data or behavior for this scenario."""
     folder = Path(__file__).resolve().parents[1] / "webui/backend/open_webui/utils"
     if not (folder / "nexrag_native_rag.py").exists():
         pytest.skip("Prepare the pinned WebUI integration first")
@@ -56,6 +57,7 @@ def test_index_and_delete_are_library_scoped(bridge, tmp_path, monkeypatch):
     calls = []
 
     def ingest(url, **kwargs):
+        """Provide ingest test data or behavior for this scenario."""
         calls.append((url, kwargs["data"].copy(), kwargs["files"]["file"][1].read()))
         assert kwargs["allow_redirects"] is False
         return Mock(status_code=200, json=lambda: {"status": True})
@@ -96,7 +98,7 @@ def test_failed_index_is_not_recorded_as_success(bridge, tmp_path, monkeypatch, 
 
 
 def test_content_update_uses_new_text_before_completion(bridge, monkeypatch):
-    """来源被编辑后，必须先替换向量，再把元数据标记为完成。"""
+    """Replace vectors before marking metadata complete after source edits."""
     import sys
     from contextlib import asynccontextmanager
 
@@ -114,6 +116,7 @@ def test_content_update_uses_new_text_before_completion(bridge, monkeypatch):
 
     @asynccontextmanager
     async def session():
+        """Provide session test data or behavior for this scenario."""
         yield "fresh-session"
 
     for name, attributes in {
@@ -131,6 +134,7 @@ def test_content_update_uses_new_text_before_completion(bridge, monkeypatch):
     observed = []
 
     def index(path, filename, identifier, library, owner, *, edited):
+        """Provide index test data or behavior for this scenario."""
         assert db.commit.await_count == 1
         assert files.update_file_data_by_id.await_count == 0
         observed.append((Path(path).read_text(encoding="utf8"), library, edited, path))

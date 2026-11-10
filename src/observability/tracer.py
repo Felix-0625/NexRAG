@@ -1,8 +1,7 @@
-"""将 Agent 运行记录为 trace、observation 和规则分数，存入 ops store。
+"""Persist traces, observations, and rule scores locally.
 
-数据模型沿用 Langfuse（trace -> observations -> scores），但存储在本地，
-使评测和自我演进可完全离线运行。observation 在运行结束后由 PydanticAI 的
-消息历史重建，因此无需 OpenTelemetry exporter。
+Use a Langfuse-style data model for offline evaluation and evolution. Reconstruct
+observations from completed PydanticAI messages without an OpenTelemetry exporter.
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ TOOL_TYPES = {
 
 @dataclass
 class TraceRecord:
-    """持久化之前收集的一次 Agent 运行的事实信息。"""
+    """Facts collected from one run before persistence."""
 
     trace_id: str
     user_id: str
@@ -53,7 +52,7 @@ class TraceRecord:
 
 
 def _summarize(value: Any, limit: int = 600) -> str:
-    """工具参数或返回值的紧凑、已脱敏的类 JSON 摘要。"""
+    """Return compact redacted JSON-like tool summaries."""
     if isinstance(value, str):
         text = value
     else:
@@ -65,7 +64,7 @@ def _summarize(value: Any, limit: int = 600) -> str:
 
 
 def _tool_error(content: Any) -> str | None:
-    """检测在"成功"的工具返回内部报告的工具级失败。"""
+    """Detect tool-level failures inside otherwise successful returns."""
     if isinstance(content, dict):
         if content.get("error"):
             return str(content["error"])[:300]
@@ -75,7 +74,7 @@ def _tool_error(content: Any) -> str | None:
 
 
 def extract_observations(messages: Iterable[ModelMessage]) -> list[dict[str, Any]]:
-    """将工具调用与其返回/重试配对，生成有序的 observation。"""
+    """Pair calls with returns or retries into ordered observations."""
     calls: dict[str, ToolCallPart] = {}
     observations: list[dict[str, Any]] = []
     for message in messages:
@@ -87,9 +86,9 @@ def extract_observations(messages: Iterable[ModelMessage]) -> list[dict[str, Any
             for part in message.parts:
                 if isinstance(part, (ToolReturnPart, RetryPromptPart)) and part.tool_name:
                     call = calls.get(part.tool_call_id)
-                    # 当前版本的 PydanticAI 把工具的 ModelRetry 序列化为带类型化
-                    # outcome 的 ToolReturnPart。不要根据任意文档/工具文本前缀
-                    # 推断失败。
+                    # PydanticAI encodes ModelRetry with a typed ToolReturnPart outcome;
+                    # never infer failure from arbitrary document or tool-text prefixes.
+
                     outcome = part.outcome if isinstance(part, ToolReturnPart) else "retried"
                     content = part.content
                     observations.append(
@@ -113,7 +112,7 @@ def extract_observations(messages: Iterable[ModelMessage]) -> list[dict[str, Any
 
 
 def _insert_trace(conn, trace, private, output_text, latency_ms, status, error) -> None:
-    """写入 trace 行；私有 trace 不保存输入、输出和错误原文。"""
+    """Insert a trace without raw private input, output, or errors."""
     conn.execute(
         "INSERT OR REPLACE INTO traces VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
@@ -134,7 +133,7 @@ def _insert_trace(conn, trace, private, output_text, latency_ms, status, error) 
 
 
 def _insert_observations(conn, trace_id, observations, private) -> None:
-    """按顺序写入 observation 行；私有 trace 不保存摘要，只保留错误标记。"""
+    """Insert ordered observations, keeping only failure flags for private traces."""
     for position, obs in enumerate(observations):
         conn.execute(
             "INSERT INTO observations VALUES (?,?,?,?,?,?,?,?)",
@@ -152,7 +151,7 @@ def _insert_observations(conn, trace_id, observations, private) -> None:
 
 
 def _insert_scores(conn, trace_id, scores) -> None:
-    """写入规则分数行。"""
+    """Insert deterministic rule scores."""
     for name, value in scores.items():
         conn.execute(
             "INSERT INTO scores VALUES (?,?,?,?,?,?,?,?)",
@@ -161,13 +160,14 @@ def _insert_scores(conn, trace_id, scores) -> None:
 
 
 class Tracer:
-    """持久化 trace 和分数；失败绝不影响用户请求。"""
+    """Persist traces and scores without failing user requests."""
 
     def __init__(self, store: OpsStore | None = None):
         self._store = store
 
     @property
     def store(self) -> OpsStore:
+        """Resolve the current operations store lazily."""
         return self._store or get_ops_store()
 
     def record(
@@ -180,7 +180,7 @@ class Tracer:
         error: str | None = None,
         rule_scores: dict[str, float] | None = None,
     ) -> str | None:
-        """写入一次已结束的运行；返回 trace ID，禁用或失败时返回 None。"""
+        """Record a completed run and return its ID, or None when disabled or failed."""
         if not settings.ENABLE_TRACING:
             return None
         try:
@@ -196,12 +196,12 @@ class Tracer:
                 scores["run_success"] = 1.0 if status == "ok" else 0.0
                 _insert_scores(conn, trace.trace_id, scores)
             return trace.trace_id
-        except Exception:  # noqa: BLE001 - 可观测性绝不能让请求失败
+        except Exception:  # noqa: BLE001 - Observability must never fail a request.
             log.exception("Failed to record trace %s", trace.trace_id)
             return None
 
     def record_rating(self, trace_id: str, value: float, comment: str | None = None) -> None:
-        """替换同一回答的旧评价，重试或改票均只计一次。"""
+        """Replace prior ratings so retries and changed votes count once."""
         with self.store.transaction() as conn:
             conn.execute(
                 "DELETE FROM scores WHERE trace_id = ? AND name = 'user_rating' AND source = 'user'",
@@ -213,7 +213,7 @@ class Tracer:
             )
 
     def purge_expired(self) -> int:
-        """删除超过 TRACE_RETENTION_DAYS 的 trace；数据集副本保留。"""
+        """Delete expired traces while retaining dataset copies."""
         cutoff = now() - settings.TRACE_RETENTION_DAYS * 86_400
         rows = self.store.query("SELECT COUNT(*) AS n FROM traces WHERE created_at < ?", (cutoff,))
         self.store.execute("DELETE FROM traces WHERE created_at < ?", (cutoff,))

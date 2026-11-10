@@ -1,11 +1,8 @@
-"""一次自进化周期（批处理，绝不按单轮对话触发）。
+"""Batch evolution, never triggered by an individual conversation.
 
-清理 -> 挖掘失败 -> 可处理的聚类（规模 >= 下限）
-  -> 对每种没有未决提案且队列有空位的产物 kind：
-       生成候选（仅使用 train 数据）
-       在 train + holdout + regression 上对比基线与候选
-       过门禁 -> 提交带变更报告的提案（或记录拒绝）
-金丝雀监控 -> 退化时自动回滚，标记可晋升的提案
+Clean up, mine eligible training failures, generate candidates with available queue slots,
+evaluate train/holdout/regression, and submit gated proposals for human review. Monitor
+canaries for rollback or promotion readiness; never promote automatically.
 """
 
 from __future__ import annotations
@@ -37,6 +34,8 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class CycleReport:
+    """Serializable outcomes and skipped work from one evolution cycle."""
+
     clusters: list[dict[str, Any]] = field(default_factory=list)
     actions: list[dict[str, Any]] = field(default_factory=list)
     housekeeping: dict[str, int] = field(default_factory=dict)
@@ -110,7 +109,9 @@ def _risk(base: dict, cand: dict) -> list[str]:
 
 
 class EvolutionCycle:
-    """从合成训练失败生成候选，经独立分组评测后提交治理层；不直接改生产版本。"""
+    """Generate candidates from synthetic train failures and submit independently evaluated
+    proposals.
+    """
 
     def __init__(
         self,
@@ -128,6 +129,7 @@ class EvolutionCycle:
 
     @property
     def store(self) -> OpsStore:
+        """Resolve the current operations store lazily."""
         return self._store or get_ops_store()
 
     async def _evaluate(
@@ -147,26 +149,27 @@ class EvolutionCycle:
     async def _best_params(
         self, baseline, cluster: FailureCluster, train_items, prompt
     ) -> tuple[dict | None, str]:
-        """只在 train 上挑选最佳的一步邻居（holdout 保持不可见）。"""
+        """Choose the best one-step parameter neighbor using train only, keeping holdout hidden."""
         base = await self._evaluate(
             "params-search-base", prompt.content, baseline.content, {}, train_items
         )
-        best, best_q = None, base.metrics.get("train", {}).get("quality", 0.0)
+        best, best_quality = None, base.metrics.get("train", {}).get("quality", 0.0)
         for neighbour in param_neighbours(baseline.content, focus_params(cluster)):
             run = await self._evaluate("params-search", prompt.content, neighbour, {}, train_items)
-            q = run.metrics.get("train", {}).get("quality", 0.0)
-            if q > best_q + 1e-9:
-                best, best_q = neighbour, q
+            candidate_quality = run.metrics.get("train", {}).get("quality", 0.0)
+            if candidate_quality > best_quality + 1e-9:
+                best, best_quality = neighbour, candidate_quality
         return (
             best,
-            f"train quality {base.metrics.get('train', {}).get('quality', 0):.3f} -> {best_q:.3f}",
+            f"train quality {base.metrics.get('train', {}).get('quality', 0):.3f} -> {best_quality:.3f}",
         )
 
     async def run(self) -> CycleReport:
-        """执行一次完整周期：清理过期提案、监控灰度、挖掘失败聚类，再为 prompt 和 params 各生成候选并过门禁。
+        """Run cleanup, canary monitoring, mining, candidate generation, and evaluation gates.
 
-        没有达标的聚类或缺少 holdout 条目时直接跳过；产物已有灰度中的提案或审核队列已满时也跳过。
-        通过门禁的候选只提交为待审核提案，返回 CycleReport。
+        Skip undersized clusters, missing holdout data, occupied canaries, and full review
+        queues.
+        Passing candidates become pending proposals only; return a CycleReport.
         """
         report = CycleReport(housekeeping=self.gov.housekeeping())
         report.canary = self.monitor_canaries()
@@ -292,11 +295,11 @@ class EvolutionCycle:
         return {"kind": kind, "action": action, "proposal_id": proposal_id, "cluster": cluster.key}
 
     def canary_metrics(self, proposal: dict[str, Any]) -> dict[str, float]:
-        """对比金丝雀启动以来 canary 与 production 的线上 trace。"""
+        """Compare canary and production traces since canary start."""
         return metrics_for_proposal(self.store, proposal)
 
     def monitor_canaries(self) -> list[dict[str, Any]]:
-        """自动回滚表现不佳的金丝雀；报告可以晋升的金丝雀。"""
+        """Roll back regressed canaries and report those eligible for promotion."""
         results = []
         for proposal in self.gov.list("canary"):
             metrics = self.canary_metrics(proposal)

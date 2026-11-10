@@ -1,4 +1,4 @@
-"""OpenAI 兼容的 Agent 对话路由与需认证的业务数据路由。"""
+"""OpenAI-compatible agent chat and authenticated business-data endpoints."""
 
 import json
 import logging
@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 @router.get("/models", response_model=ModelListResponse)
 async def list_models(request: Request):
-    """公布实际的 agent 模型，而不是 NexRAG 服务别名。"""
+    """Advertise the actual agent model rather than the NexRAG service alias."""
     principal = (
         get_principal(request) if request.headers.get(settings.NEXRAG_USER_JWT_HEADER) else None
     )
@@ -49,7 +49,7 @@ async def list_models(request: Request):
 
 
 def _authorize_chat(request: ChatCompletionRequest, principal: Principal, tenant_id: str | None):
-    """校验模型可用性、租户授权与数据策略，返回所选模型记录和生效策略。"""
+    """Validate model, tenant, and data policy; return the model record and effective policy."""
     try:
         selected_model = agent_models.resolve_model(request.model)
     except ValueError as exc:
@@ -71,7 +71,7 @@ def _authorize_chat(request: ChatCompletionRequest, principal: Principal, tenant
 
 
 def _split_conversation(request: ChatCompletionRequest) -> tuple[str, list[tuple[str, str]]]:
-    """取出最后一条用户消息作为提示词，其之前的用户/助手消息作为历史。"""
+    """Use the last user message as prompt and preceding user or assistant messages as history."""
     user_messages = [index for index, item in enumerate(request.messages) if item.role == "user"]
     if not user_messages:
         raise HTTPException(status_code=422, detail="A user message is required")
@@ -97,7 +97,7 @@ def _build_context(
     capture_memory: bool,
     completion_id: str,
 ) -> UserContext:
-    """根据已授权的请求组装本轮 Agent 的用户上下文。"""
+    """Build this turn's user context from the authorized request."""
     return UserContext(
         user_id=principal.user_id,
         model_id=selected_model["id"],
@@ -111,7 +111,7 @@ def _build_context(
         business_source_generation=get_setting("business_source_generation", 0),
         tenant_id=tenant_id or "",
         chat_id=(chat_id or "")[:128] or None,
-        # 以 Open WebUI 的 assistant 消息 ID 将点赞/点踩反馈关联到这条 trace。
+        # Link feedback to this trace using the Open WebUI assistant message ID.
         trace_id=(message_id or "")[:128] or completion_id,
         knowledge_scopes=list(principal.knowledge_scopes),
         knowledge_labels=principal.knowledge_labels,
@@ -132,7 +132,7 @@ async def _sse_chunks(
     completion_id: str,
     created: int,
 ):
-    """按 OpenAI SSE 格式逐块输出 Agent 回答，错误以 error 块返回。"""
+    """Yield OpenAI SSE answer chunks and structured error chunks."""
     index = 0
     try:
         async for token in runner.run_stream(prompt, context, history):
@@ -187,7 +187,7 @@ async def _complete_once(
     completion_id: str,
     created: int,
 ) -> dict:
-    """运行一次非流式 Agent 回合，并把异常映射为对应的 HTTP 状态码。"""
+    """Run one nonstreaming turn and map failures to HTTP status codes."""
     try:
         answer = await runner.run(prompt, context, history)
     except GroundingFailure as exc:
@@ -223,7 +223,7 @@ async def chat_completions(
     message_id: str | None = Header(default=None, alias="X-OpenWebUI-Message-Id"),
     capture_memory: bool = Header(default=True, alias="X-NexRAG-Capture-Memory"),
 ):
-    """执行一轮已授权的 Agent 对话，并格式化为 OpenAI 对话响应。"""
+    """Run an authorized agent turn and format an OpenAI chat response."""
     selected_model, policy = _authorize_chat(request, principal, tenant_id)
     prompt, history = _split_conversation(request)
     completion_id = f"chatcmpl-{uuid4().hex}"
@@ -252,7 +252,7 @@ async def chat_completions(
 
 @router.get("/tenants")
 def list_tenants(principal: Principal = Depends(get_principal)):
-    """列出已验证的 Open WebUI 用户有权访问的业务租户。"""
+    """List business tenants granted to the authenticated Open WebUI user."""
     return {
         "data": [
             {"tenant_id": tenant_id, "label": label}
@@ -266,7 +266,7 @@ def business_query(
     body: BusinessQueryRequest,
     principal: Principal = Depends(get_principal),
 ):
-    """为已授权租户执行有边界的分析查询。"""
+    """Execute a bounded analytical query for an authorized tenant."""
     if body.tenant_id not in allowed_tenants(principal):
         raise HTTPException(status_code=403, detail="Tenant access denied")
     try:

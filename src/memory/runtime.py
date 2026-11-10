@@ -1,7 +1,7 @@
-"""进程级的长期记忆装配。
+"""Assemble process-wide memory dependencies.
 
-Qdrant 可达时使用 Qdrant，否则退回内存索引以保证 Agent 可用（此时记忆仅在
-进程存活期间有效，并记录警告）。LLM completer 复用已配置的 OpenAI 兼容端点。
+Prefer Qdrant; warn and fall back to process-local vectors during outages, retaining
+queued writes. Reuse the configured OpenAI-compatible completion endpoint.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ _service: MemoryService | None = None
 async def llm_complete(
     system: str, user: str, *, model: str | None = None, schema: dict | None = None
 ) -> str:
-    """向 OpenAI 兼容的 LLM 端点发起一次面向 JSON 输出的补全。"""
+    """Request one JSON-oriented completion from the configured endpoint."""
     if not local_memory_configuration() or cloud_model_name(model or settings.LLM_MODEL_NAME):
         raise ValueError(
             "Personal memory and improvement helpers require local models without cloud routing"
@@ -58,11 +58,10 @@ async def llm_complete(
 
 
 async def memory_complete(system: str, user: str) -> str:
-    """将提取约束在经校验的 Pydantic 数值/字段 schema 内。
+    """Constrain extraction to Pydantic fields and numeric types.
 
-    仅靠提示词要求 JSON 时，真实本地模型会输出 confidence="high"、
-    importance="medium"，导致所有记忆被静默丢弃。约束解码直接强制该契约，
-    而不是去猜测数值替代。
+    Prompt-only JSON can produce confidence='high' and silently discard memories. Constrained
+    decoding enforces the contract without guessing replacement values.
     """
     from src.memory.extractor import Extraction
 
@@ -71,7 +70,7 @@ async def memory_complete(system: str, user: str) -> str:
 
 
 def build_index(collection: str) -> VectorIndex:
-    """优先返回连通的 Qdrant 索引；不可达时退回进程内索引（标记 fallback，写入进入 outbox 待恢复后同步）。"""
+    """Prefer Qdrant; otherwise return a flagged in-memory fallback with queued writes."""
     try:
         index = QdrantVectorIndex(collection)
         index.client.get_collections()
@@ -79,13 +78,13 @@ def build_index(collection: str) -> VectorIndex:
     except Exception:  # noqa: BLE001
         log.warning("Qdrant unavailable for %s; using in-memory index", collection)
         index = InMemoryVectorIndex()
-        # 写入仍会进入 outbox，待 Qdrant 恢复后同步过去。
+        # Keep writes queued for replay when Qdrant recovers.
         index.fallback = True
         return index
 
 
 def get_memory_service() -> MemoryService | None:
-    """返回共享的记忆服务；记忆被禁用时返回 None。"""
+    """Return the shared memory service, or None when disabled."""
     global _service
     if not settings.ENABLE_MEMORY:
         return None
@@ -106,7 +105,7 @@ def get_memory_service() -> MemoryService | None:
 
 
 def set_memory_service(service: MemoryService | None) -> None:
-    """替换进程级共享的记忆服务；传入 None 会清空，下次获取时重新创建。"""
+    """Replace the shared service; None resets it for lazy recreation."""
     global _service
     with _lock:
         _service = service

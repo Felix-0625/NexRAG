@@ -1,4 +1,4 @@
-"""类型化的工具结果在追踪后必须保留，且不泄露私有原因。"""
+"""Typed tool outcomes survive tracing without revealing private reasons."""
 
 from pydantic_ai.messages import (
     ModelRequest,
@@ -14,6 +14,7 @@ from src.observability.tracer import Tracer, TraceRecord, extract_observations
 
 
 def messages_with_outcomes():
+    """Provide messages with outcomes test data or behavior for this scenario."""
     parts = [
         ToolReturnPart(
             "calculate_evidence_arithmetic",

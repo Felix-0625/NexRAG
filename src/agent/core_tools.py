@@ -1,4 +1,4 @@
-"""核心内置工具：规划、业务库查询、知识库检索、联网搜索、文件检查、导出与记忆召回。"""
+"""Core planning, business, knowledge, web, file, export, and memory tools."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from src.agent.authorization import (
     refresh_policy,
     require_business,
 )
-from src.agent.context import bound_documents
+from src.agent.context import DOCUMENT_CONTEXT_CHAR_BUDGET, bound_documents
 from src.agent.dependencies import AgentDeps
 from src.agent.exports import ExportSecurityError
 from src.agent.exports import export_analysis as export_analysis_file
@@ -29,16 +29,35 @@ from src.agent.tools import (
     search_knowledge,
     search_web,
 )
-from src.config import settings
+from src.config import DEFAULT_KNOWLEDGE_TOP_K, MAX_KNOWLEDGE_TOP_K, settings
 
-# 检索结果中保留的溯源元数据字段
+# Keep provenance metadata needed by retrieval results.
 _CITATION_METADATA_KEYS = frozenset(
-    {"collection_name", "filename", "source", "section", "page", "version"}
+    {
+        "collection_name",
+        "file_id",
+        "filename",
+        "source",
+        "section",
+        "page",
+        "version",
+        "ingest_version",
+        "parent_id",
+        "parent_split_id",
+        "child_split_id",
+        "chunk_index",
+        "source_id",
+        "source_text_sha256",
+        "split_idx_start",
+        "context_window_start",
+        "context_window_end",
+        "context_window_missing",
+    }
 )
 
 
 def _can_reflect(ctx: RunContext[AgentDeps]) -> bool:
-    """本次运行是否还有自我反思（重试提示）的额度。"""
+    """Check whether this run has reflection and retry-hint budget left."""
     return ctx.deps.reflections < int(
         ctx.deps.params.get("max_tool_retries", settings.MAX_TOOL_RETRIES)
     )
@@ -83,7 +102,7 @@ async def get_business_schema(
 
 
 async def _execute_business_query(ctx: RunContext[AgentDeps], sql: str) -> dict:
-    """按评估适配器、业务会话或默认业务库的优先级执行只读查询。"""
+    """Query the evaluation adapter, turn session, or default database in that priority order."""
     if ctx.deps.evaluation and ctx.deps.evaluation.business_adapter is not None:
         from src.agent.business_session import current_business_session
 
@@ -103,7 +122,7 @@ async def _execute_business_query(ctx: RunContext[AgentDeps], sql: str) -> dict:
 
 
 def _empty_result_reflection(result: dict) -> dict:
-    """查询返回 0 行时附带自我反思提示。"""
+    """Attach a reflection hint to an empty query result."""
     return {
         **result,
         "row_count": 0,
@@ -118,7 +137,7 @@ def _empty_result_reflection(result: dict) -> dict:
 
 
 def _query_failure_result(ctx: RunContext[AgentDeps], exc: Exception) -> dict:
-    """SQL 执行失败时返回错误，额度内附带重试提示。"""
+    """Return a SQL failure with a retry hint only while reflection budget remains."""
     if _can_reflect(ctx):
         ctx.deps.reflections += 1
         return {
@@ -165,7 +184,7 @@ async def query_database(ctx: RunContext[AgentDeps], sql: str) -> dict:
 
 
 async def _retrieve_documents(ctx: RunContext[AgentDeps], query: str) -> list[dict] | dict:
-    """检查外发策略后取回文档；被拒绝时返回错误字典。"""
+    """Check egress policy before retrieving documents; return a tool error on denial."""
     from src.midplatform.data_policy import is_loopback_endpoint
 
     policy = await refresh_policy(ctx.deps.context)
@@ -177,17 +196,21 @@ async def _retrieve_documents(ctx: RunContext[AgentDeps], query: str) -> list[di
                 "error": "No isolated evaluation knowledge fixture was supplied; live knowledge is not queried"
             }
         return [dict(document) for document in ctx.deps.evaluation.knowledge_documents]
+    top_k = settings.KNOWLEDGE_TOP_K
+    if top_k is None:
+        stored_top_k = int(ctx.deps.params.get("knowledge_top_k", DEFAULT_KNOWLEDGE_TOP_K))
+        top_k = max(1, min(MAX_KNOWLEDGE_TOP_K, stored_top_k))
     return await search_knowledge(
         query,
         base_url=settings.RETRIEVAL_API_BASE_URL,
         api_key=settings.RETRIEVAL_API_KEY or "",
         collection_name=ctx.deps.context.knowledge_scopes,
-        top_k=max(1, min(3, int(ctx.deps.params.get("knowledge_top_k", 3)))),
+        top_k=top_k,
     )
 
 
 def _bound_new_documents(ctx: RunContext[AgentDeps], documents: list[dict]) -> list[dict]:
-    """剔除本轮已展示的文档，并按剩余上下文预算截取，同时记录已用上下文。"""
+    """Skip documents already shown and account for the remaining context budget."""
     unique_documents = []
     import hashlib
 
@@ -196,7 +219,8 @@ def _bound_new_documents(ctx: RunContext[AgentDeps], documents: list[dict]) -> l
         if fingerprint not in ctx.deps.document_context_keys:
             unique_documents.append({**document, "_context_key": fingerprint})
     documents = bound_documents(
-        unique_documents, char_budget=max(0, 12_000 - ctx.deps.document_context_chars)
+        unique_documents,
+        char_budget=max(0, DOCUMENT_CONTEXT_CHAR_BUDGET - ctx.deps.document_context_chars),
     )
     for document in documents:
         ctx.deps.document_context_keys.add(document.pop("_context_key"))
@@ -205,7 +229,7 @@ def _bound_new_documents(ctx: RunContext[AgentDeps], documents: list[dict]) -> l
 
 
 def _citation_metadata(documents: list[dict]) -> list[dict]:
-    # 保留引用所需的溯源信息，避免每轮检索都重复携带体积较大的索引哈希/所有者元数据。
+    # Retain citation provenance without repeating bulky index hashes and owner metadata each turn.
     return [
         {
             **doc,
@@ -222,7 +246,7 @@ def _citation_metadata(documents: list[dict]) -> list[dict]:
 def _knowledge_response(
     ctx: RunContext[AgentDeps], documents: list[dict], returned_count: int, evidence_id: str
 ) -> dict:
-    """按预算耗尽、无结果、低相关度的顺序给出提示，否则返回正常结果。"""
+    """Prioritize budget, empty-result, and relevance warnings before normal output."""
     if not documents and returned_count:
         return {
             "evidence_id": evidence_id,
@@ -399,7 +423,7 @@ async def recall_memory(ctx: RunContext[AgentDeps], query: str) -> dict[str, Any
         return {"memories": [], "note": "Long-term memory is disabled."}
     try:
         recalled = await service.recall(query, ctx.deps.context.memory_scope())
-    except Exception as exc:  # noqa: BLE001 - 记忆故障不得中断本次运行
+    except Exception as exc:  # noqa: BLE001 - Memory failures must not interrupt the run.
         return {"error": f"Memory recall unavailable: {exc}"}
     ctx.deps.memory_hits += len(recalled)
     return {
@@ -419,7 +443,7 @@ async def recall_memory(ctx: RunContext[AgentDeps], query: str) -> dict[str, Any
 
 
 def register_core_tools(agent) -> None:
-    """按固定顺序注册核心工具（顺序与工具定义对 LLM 可见）。"""
+    """Register tools in stable order because both order and definitions are visible to the model."""
     for tool in (
         plan_analysis,
         get_business_schema,

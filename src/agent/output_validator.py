@@ -1,4 +1,4 @@
-"""最终答案的输出校验器：未获证据支撑的答案会被要求重试。"""
+"""Retry final answers that lack supporting evidence."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def _render_business_answer(ctx: RunContext[AgentDeps], answer):
-    """将结构化报告或已就绪的证据渲染为答案正文。"""
+    """Render a structured report or ready evidence into the answer body."""
     from src.agent.metric_results import (
         BusinessReport,
         business_report_ready,
@@ -42,7 +42,7 @@ def _render_business_answer(ctx: RunContext[AgentDeps], answer):
 
 
 def _link_exports(ctx: RunContext[AgentDeps], answer: str) -> str:
-    """确保本轮导出的文件下载链接出现在答案中。"""
+    """Ensure this turn's export download links appear in the answer."""
     for exported in ctx.deps.exports:
         url = exported["download_url"]
         answer = re.sub(
@@ -56,7 +56,7 @@ def _link_exports(ctx: RunContext[AgentDeps], answer: str) -> str:
 
 
 def register_output_validator(agent) -> None:
-    """注册最终输出校验：先渲染结构化报告，再检查证据，最后附加合法下载链接。"""
+    """Register report rendering, evidence validation, and authorized download-link attachment."""
 
     @agent.output_validator
     def require_verified_evidence(ctx: RunContext[AgentDeps], answer: str | BusinessReport) -> str:

@@ -1,4 +1,4 @@
-"""防止固定版本的 WebUI 集成丢失用户的业务任务。"""
+"""Pinned WebUI integration must preserve the user's business task."""
 
 import ast
 import asyncio
