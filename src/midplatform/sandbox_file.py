@@ -1,11 +1,8 @@
-"""沙箱化的文件检查器，用于临时的表格和文本文件。
+"""Inspect temporary tables and text in a dedicated sandbox.
 
-严格限制路径范围、按大小/行数截断并检测格式，以防路径穿越、密钥泄露和上下文
-窗口被撑满。
-
-沙箱根目录始终是显式指定的专用目录（见 ``src.config.settings.SANDBOX_ROOT_DIR``），
-而不是进程工作目录。若退回工作目录，服务在容器那个本来为空的工作目录之外运行时，
-工具就能触及应用源码和配置文件。
+Bound paths, bytes, and rows to prevent traversal, secret disclosure, and context overflow.
+Never use the process working directory: outside an empty container this exposes source
+and configuration files.
 """
 
 from __future__ import annotations
@@ -37,29 +34,25 @@ FORBIDDEN_EXTENSIONS = {
 
 
 class FileSandboxSecurityError(ValueError):
-    """文件操作违反沙箱边界或访问策略时抛出。"""
+    """Reject file operations outside sandbox boundaries or access policy."""
 
 
 def validate_safe_path(
     file_path: str | Path,
     base_dir: Path,
 ) -> Path:
-    """校验目标路径解析后位于允许的沙箱边界之内。
-
-    ``base_dir`` 为必填：调用方必须传入专用的沙箱目录，
-    而不是依赖与进程所在位置绑定的隐式默认值。
-    """
+    """Require resolved targets inside an explicitly supplied dedicated sandbox root."""
     root = base_dir.resolve()
     root.mkdir(parents=True, exist_ok=True)
     target = (root / file_path if not Path(file_path).is_absolute() else Path(file_path)).resolve()
 
-    # 校验位于根目录边界之内，以防路径穿越
+    # Require root containment to prevent traversal.
     if not target.is_relative_to(root):
         raise FileSandboxSecurityError(
             f"Access denied: path {file_path!r} resolves outside sandbox root ({root})"
         )
 
-    # 检查是否含被禁止的敏感路径成分或扩展名
+    # Block sensitive components and extensions even inside the sandbox.
     for part in target.parts:
         for forbidden in FORBIDDEN_FILE_PATTERNS:
             if part == forbidden or part.startswith(f"{forbidden}."):
@@ -81,7 +74,7 @@ def validate_safe_path(
 
 
 def _inspect_tabular(path: Path, ext: str, clamped_rows: int) -> dict[str, Any]:
-    """读取 CSV / TSV 的表头、总行数和采样行。"""
+    """Read CSV or TSV headers, row counts, and bounded samples."""
     delimiter = "\t" if ext == ".tsv" else ","
     try:
         with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
@@ -103,7 +96,7 @@ def _inspect_tabular(path: Path, ext: str, clamped_rows: int) -> dict[str, Any]:
             for row in reader:
                 row_count += 1
                 if len(sample_rows) < clamped_rows:
-                    # 补齐或截断行，使其与表头长度一致
+                    # Keep malformed sample rows aligned with the header.
                     row_dict = {
                         headers[i]: row[i] if i < len(row) else "" for i in range(len(headers))
                     }
@@ -127,14 +120,14 @@ def _inspect_tabular(path: Path, ext: str, clamped_rows: int) -> dict[str, Any]:
 
 
 def _inspect_json(path: Path, clamped_rows: int) -> dict[str, Any]:
-    """解析 JSON 文件，按数组/对象/基本类型分别整理结果。"""
+    """Summarize JSON arrays, objects, or primitives within limits."""
     try:
         raw_text = path.read_text(encoding="utf-8", errors="replace")
         parsed = json.loads(raw_text)
         if isinstance(parsed, list):
             total_items = len(parsed)
             sample = parsed[:clamped_rows]
-            # 若是字典列表，则提取列名
+
             columns = list(sample[0].keys()) if sample and isinstance(sample[0], dict) else []
             return {
                 "filename": path.name,
@@ -164,7 +157,7 @@ def _inspect_json(path: Path, clamped_rows: int) -> dict[str, Any]:
 
 
 def _inspect_text(path: Path, ext: str, start_line_idx: int, clamped_lines: int) -> dict[str, Any]:
-    """按行读取纯文本、Markdown、日志等文档的指定窗口。"""
+    """Read a line window from text, Markdown, or logs."""
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             all_lines = handle.readlines()
@@ -199,20 +192,17 @@ def inspect_file_content(
     start_line: int = 1,
     max_lines: int = 50,
 ) -> dict[str, Any]:
-    """检查并采样安全的本地文件，避免加载过多上下文。"""
+    """Inspect and sample safe local files without overloading model context."""
     path = validate_safe_path(file_path, base_dir=base_dir)
     ext = path.suffix.lower()
     clamped_rows = max(1, min(max_rows, 50))
     clamped_lines = max(1, min(max_lines, 200))
     start_line_idx = max(1, start_line)
 
-    # 表格类 CSV / TSV 文件
     if ext in {".csv", ".tsv"}:
         return _inspect_tabular(path, ext, clamped_rows)
 
-    # 结构化 JSON 文件
     if ext == ".json":
         return _inspect_json(path, clamped_rows)
 
-    # 纯文本、Markdown、日志或其他文档
     return _inspect_text(path, ext, start_line_idx, clamped_lines)

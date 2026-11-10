@@ -1,4 +1,4 @@
-"""不另起应用数据库，直接测试已发布的 REST 与 socket 笔记授权。"""
+"""Exercise shipped REST and socket note authorization without another app database."""
 
 import ast
 import asyncio
@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 
 def shipped_functions(path, names, namespace):
+    """Provide shipped functions test data or behavior for this scenario."""
     nodes = []
     for node in ast.parse(Path(path).read_text(encoding="utf8")).body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:

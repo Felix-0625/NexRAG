@@ -1,4 +1,4 @@
-"""验证单智能体的多步规划与查询拆解。"""
+"""Multi-step planning and query decomposition in the single agent."""
 
 from __future__ import annotations
 
@@ -18,11 +18,12 @@ from src.agent.tools import register_plan
 
 @pytest.fixture
 def user_context():
+    """Provide the authorized user context for this scenario."""
     return UserContext(user_id="analyst_1", email="analyst@example.local", tenant_id="seller_001")
 
 
 def test_register_plan_logic():
-    """register_plan 辅助函数会清理子任务，并拒绝空输入。"""
+    """Planning cleans subtasks and rejects empty input."""
     empty_steps, err = register_plan(["  ", ""])
     assert empty_steps == []
     assert "error" in err
@@ -34,9 +35,10 @@ def test_register_plan_logic():
 
 
 def test_plan_analysis_registers_sub_tasks_in_agent_run(monkeypatch, user_context):
-    """plan_analysis 与取证调用并用时，有序子任务会写入 AgentDeps。"""
+    """Planning and evidence tools must store ordered steps in AgentDeps."""
 
     async def fake_search(query, *, base_url, api_key, collection_name, client=None, top_k=3):
+        """Provide fake search test data or behavior for this scenario."""
         return [{"source": "policy.md", "content": "delay rules", "score": 0.88}]
 
     monkeypatch.setattr(core_tools, "search_knowledge", fake_search)
@@ -44,6 +46,7 @@ def test_plan_analysis_registers_sub_tasks_in_agent_run(monkeypatch, user_contex
     deps = AgentDeps(context=user_context)
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with agent.override(
             model=TestModel(
                 call_tools=["plan_analysis", "search_knowledge_documents"],
@@ -56,9 +59,9 @@ def test_plan_analysis_registers_sub_tasks_in_agent_run(monkeypatch, user_contex
             )
 
     asyncio.run(run())
-    # TestModel 会自带占位的 sub_tasks；关键在于 plan_analysis 登记的步骤
-    # 确实落入 AgentDeps.plan_steps（该字段此前只写入、从未被读取，
-    # 包括本测试在内）。
+    # TestModel supplies placeholder subtasks; verify the actual registered steps
+    # reach AgentDeps.plan_steps, which was previously write-only
+    # even in this test.
     assert len(deps.plan_steps) > 0
     assert deps.evidence_calls >= 1
 
@@ -79,16 +82,18 @@ def test_plan_conflicts_respect_original_prohibitions(prompt, proposed, conflict
 def test_rejected_plan_does_not_mutate_requirements_and_allowed_retry_can_finish(
     monkeypatch, user_context
 ):
-    """走真实的工具调度与重试流程，而不是只测试匹配器。"""
+    """Exercise real tool dispatch and retries, not just intent matching."""
     prompt = "查知识库，不查询业务数据库。"
     deps = AgentDeps(context=user_context)
     deps.ledger = EvidenceLedger(required={"kb"}, prompt=prompt)
     calls = 0
 
     async def fake_search(query, *, base_url, api_key, collection_name, client=None, top_k=3):
+        """Provide fake search test data or behavior for this scenario."""
         return [{"source": "policy.md", "content": "delay rules", "score": 0.88}]
 
     def provider(messages, info):
+        """Provide provider test data or behavior for this scenario."""
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -121,6 +126,7 @@ def test_rejected_plan_does_not_mutate_requirements_and_allowed_retry_can_finish
     agent = AgenticRunner()._build_agent()
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with agent.override(model=FunctionModel(provider)):
             return await agent.run(prompt, deps=deps)
 

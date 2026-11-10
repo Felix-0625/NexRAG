@@ -1,4 +1,4 @@
-"""粒度证明必须放行合法 SQL，并拒绝不安全的假设。"""
+"""Grain proofs allow legitimate SQL and reject unsafe assumptions."""
 
 import hashlib
 import sqlite3
@@ -11,6 +11,7 @@ from src.midplatform.query_semantics import QuerySemanticsError, inspect_query
 
 
 def view():
+    """Provide view test data or behavior for this scenario."""
     return ViewSpec(
         {"order_id": "TEXT", "amount": "REAL"},
         "SELECT tenant_id AS __tenant_id, order_id, amount FROM orders",
@@ -116,6 +117,7 @@ def test_window_total_is_not_summed_again_in_answer_validation():
 
 
 def source(tmp_path, *, duplicate=False):
+    """Create an isolated business-data source for this scenario."""
     path = tmp_path / "source.db"
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE orders(tenant_id TEXT, order_id TEXT, amount REAL)")

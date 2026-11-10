@@ -1,4 +1,4 @@
-"""个人记忆辅助组件仅限本地运行，与聊天模型的审批状态无关。"""
+"""Keep personal-memory helpers local regardless of chat-model approval."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from src.midplatform.data_policy import is_loopback_endpoint, model_is_local
 
 
 def cloud_model_name(name: str) -> bool:
-    """模型名带 ":cloud" 或 "-cloud" 标记时视为云端路由模型。"""
+    """Detect cloud-routed names carrying :cloud or -cloud markers."""
     value = name.lower()
     return ":cloud" in value or value.endswith("-cloud")
 
 
 def local_memory_configuration() -> bool:
-    """个人记忆所需组件是否全部在本机：辅助 LLM、embedding 模型与端点、向量库均须为本地回环且非云端模型。"""
+    """Require local, noncloud helper models, embedding endpoints, and vector storage."""
     return (
         model_is_local(
             {

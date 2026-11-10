@@ -1,1 +1,1 @@
-"""NexRAG 可观测性包。"""
+"""NexRAG observability package."""

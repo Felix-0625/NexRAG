@@ -2,7 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
-from qdrant_client import models
+import pytest
+from qdrant_client import QdrantClient, models
 
 from app.services.qdrant import has_sparse_vectors, reset_sparse_capability, vector_search
 
@@ -41,10 +42,69 @@ async def test_hybrid_when_sparse_present():
     sparse_leg = next(p for p in prefetch if p.using == "text-sparse")
     assert sparse_leg.query == sparse
 
-    assert isinstance(call_kwargs["query"], models.FusionQuery)
-    assert call_kwargs["query"].fusion == models.Fusion.RRF
+    assert isinstance(call_kwargs["query"], models.RrfQuery)
+    assert call_kwargs["query"].rrf.k == 2
+    assert call_kwargs["query"].rrf.weights == [1.0, 1.0]
     # Hybrid path returns RRF score directly (no cosine normalization)
     assert result.distances == [0.42]
+
+
+@pytest.mark.parametrize("weights,expected", [((1.0, 0.1), "dense"), ((0.1, 1.0), "sparse")])
+async def test_native_weights_change_ranking_without_crossing_scope(
+    monkeypatch, weights, expected
+):
+    """Exercise the real Query API; an unauthorized strongest match stays excluded."""
+    from app.config import settings
+
+    client = QdrantClient(":memory:")
+    client.create_collection(
+        "ingestion_files",
+        vectors_config={
+            "text-dense": models.VectorParams(size=2, distance=models.Distance.COSINE)
+        },
+        sparse_vectors_config={"text-sparse": models.SparseVectorParams()},
+    )
+    points = []
+    for index, (name, dense, sparse, scope) in enumerate(
+        [
+            ("dense", [1.0, 0.0], 1.0, "allowed"),
+            ("sparse", [0.0, 1.0], 2.0, "allowed"),
+            ("private", [1.0, 0.0], 100.0, "denied"),
+        ]
+    ):
+        points.append(
+            models.PointStruct(
+                id=index,
+                vector={
+                    "text-dense": dense,
+                    "text-sparse": models.SparseVector(indices=[1], values=[sparse]),
+                },
+                payload={"content": name, "meta": {"collection_name": scope}},
+            )
+        )
+    client.upsert("ingestion_files", points)
+    monkeypatch.setattr("app.services.qdrant.get_client", lambda: client)
+    monkeypatch.setattr("app.services.qdrant.has_sparse_vectors", lambda: True)
+    monkeypatch.setattr(settings, "hybrid_dense_weight", weights[0])
+    monkeypatch.setattr(settings, "hybrid_sparse_weight", weights[1])
+    result = await vector_search(
+        ["allowed"], [1.0, 0.0], models.SparseVector(indices=[1], values=[1.0]), 2
+    )
+    assert result.texts[0] == expected
+    assert set(result.texts) == {"dense", "sparse"}
+    client.close()
+
+
+async def test_dbsf_uses_native_distribution_fusion(monkeypatch):
+    from app.config import settings
+
+    client = MagicMock()
+    client.query_points.return_value.points = []
+    monkeypatch.setattr("app.services.qdrant.get_client", lambda: client)
+    monkeypatch.setattr("app.services.qdrant.has_sparse_vectors", lambda: True)
+    monkeypatch.setattr(settings, "hybrid_fusion", "dbsf")
+    await vector_search(["allowed"], [1.0], models.SparseVector(indices=[1], values=[1.0]), 2)
+    assert client.query_points.call_args.kwargs["query"].fusion == models.Fusion.DBSF
 
 
 async def test_hybrid_falls_back_to_dense_when_collection_has_no_sparse():

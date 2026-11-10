@@ -1,4 +1,4 @@
-"""验证外部网络搜索工具的集成与降级机制。"""
+"""External web-search integration and graceful fallback."""
 
 from __future__ import annotations
 
@@ -17,11 +17,12 @@ from src.agent.tools import search_web
 
 @pytest.fixture
 def user_context():
+    """Provide the authorized user context for this scenario."""
     return UserContext(user_id="researcher", email="research@example.local", tenant_id="seller_001")
 
 
 def test_search_web_formats_searxng_json_response():
-    """模拟的 SearXNG JSON 响应会被解析为干净的网页搜索摘要。"""
+    """Format mocked SearXNG JSON into clean web summaries."""
     fake_payload = {
         "results": [
             {
@@ -34,10 +35,12 @@ def test_search_web_formats_searxng_json_response():
     }
 
     def respond(request: httpx.Request) -> httpx.Response:
+        """Return a deterministic mocked HTTP response."""
         assert "format=json" in str(request.url)
         return httpx.Response(200, json=fake_payload)
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             return await search_web(
                 "market trends", searxng_url="http://mock-searxng:8080", client=client
@@ -51,12 +54,14 @@ def test_search_web_formats_searxng_json_response():
 
 
 def test_search_web_offline_fallback():
-    """外部搜索引擎离线时，工具返回友好的降级提示。"""
+    """Offline search returns a friendly fallback."""
 
     def respond(_request: httpx.Request) -> httpx.Response:
+        """Return a deterministic mocked HTTP response."""
         raise httpx.ConnectError("Connection refused")
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             return await search_web(
                 "market trends", searxng_url="http://offline-searxng:8080", client=client
@@ -69,7 +74,7 @@ def test_search_web_offline_fallback():
 
 
 def test_agent_search_web_tool_execution(monkeypatch, user_context):
-    """获得真实结果后，调用 search_web_engine 工具会使证据计数增加。"""
+    """Real results increment search tool evidence."""
     from src.config import settings
     from src.midplatform.data_policy import save_account_policy, save_resource_policy
 
@@ -78,6 +83,7 @@ def test_agent_search_web_tool_execution(monkeypatch, user_context):
     save_account_policy(user_context.email, {"external_search": True}, "test")
 
     async def fake_search(query, *, searxng_url=None, timeout=8.0, client=None):
+        """Provide fake search test data or behavior for this scenario."""
         return [
             {
                 "title": "Olist Platform Update",
@@ -92,6 +98,7 @@ def test_agent_search_web_tool_execution(monkeypatch, user_context):
     deps = AgentDeps(context=user_context)
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with agent.override(model=TestModel(call_tools=["search_web_engine"])):
             return await agent.run("Find latest Olist platform news", deps=deps)
 
@@ -102,14 +109,14 @@ def test_agent_search_web_tool_execution(monkeypatch, user_context):
 
 @pytest.mark.parametrize("state", ["secret", "revoked", "bridge_unavailable", "tenant_revoked"])
 def test_search_rechecks_live_authorization_before_sending_query(monkeypatch, state):
-    """模型在发起工具调用之前，可能已经读取过数据。"""
+    """The model may have read data before attempting its outbound call."""
     from src.config import settings
     from src.midplatform.data_policy import DataAccessPolicy
 
     monkeypatch.setattr(settings, "ENABLE_WEB_SEARCH", True)
     probe = AsyncMock()
     monkeypatch.setattr(core_tools, "search_web", probe)
-    # 先设置一个在缓存或复用时会允许外发的策略。
+    # Seed a policy that would allow egress if cached or reused.
     monkeypatch.setattr(
         core_tools,
         "current_policy",

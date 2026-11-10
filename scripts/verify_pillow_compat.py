@@ -1,8 +1,7 @@
-"""验证临时的 Pillow 安全覆盖版本，且不使用员工数据。
+"""Verify a temporary Pillow security override without employee data.
 
-在项目的 Python 环境中运行，并需已安装 Pillow >=13。若要做隔离的覆盖测试，
-把 Pillow 13 的安装目录放到 PYTHONPATH 最前面；结果会记录实际测试的版本。
-BM42 权重必须已存在于 --cache-dir；本脚本离线运行。
+Require installed Pillow >=13; isolated overrides may prepend their directory to
+PYTHONPATH. Record the tested version and use cached BM42 weights for offline checks.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from PIL import Image, ImageOps
 
 
 def image_roundtrips() -> list[str]:
-    """用生成的合成图像验证 Pillow 的多种格式编解码、EXIF 转正、缩放和 PDF 编码，返回已验证的操作名称。"""
+    """Test codecs, EXIF orientation, resizing, and PDF encoding with generated images."""
     original = Image.new("RGB", (31, 19), (72, 140, 210))
     formats = ["PNG", "JPEG", "TIFF", "BMP", "WEBP"]
     for file_format in formats:
@@ -33,8 +32,8 @@ def image_roundtrips() -> list[str]:
             processed = ImageOps.exif_transpose(restored).convert("RGB")
             processed = ImageOps.fit(processed, (24, 24), method=Image.Resampling.BICUBIC)
             assert processed.size == (24, 24)
-    # PDF 视觉抽取器使用 Pillow 的本地图像编码器；这里用生成的页面图像来验证，
-    # 而不是打开来源不可信的员工 PDF。
+    # Exercise the PDF visual extractor's local codec with generated pages,
+    # not untrusted employee PDFs.
     pdf = io.BytesIO()
     original.save(pdf, format="PDF")
     assert pdf.getvalue().startswith(b"%PDF-")
@@ -42,7 +41,9 @@ def image_roundtrips() -> list[str]:
 
 
 def main() -> None:
-    """要求 Pillow 主版本不低于 13，执行图像往返与离线 BM42 稀疏嵌入检查，打印结果并可写入 --output。"""
+    """Require Pillow 13+, test image round trips and cached BM42 embeddings, and optionally save
+    results.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-dir", required=True, type=Path)
     parser.add_argument("--output", type=Path)

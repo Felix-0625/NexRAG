@@ -1,6 +1,7 @@
-"""独立于 Agent/工具注册，按次运行组装动态指令。
+"""Assemble per-run instructions independently of agent and tool registration.
 
-schema 访问保持为注入的回调，以保证评测隔离，并支持服务/测试提供者延迟绑定；本模块不导入 Agent runner。
+Injected schema callbacks preserve evaluation isolation and late binding without importing the
+runner.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
 
 
 def _presentation_instruction() -> str:
-    """最终答案的呈现约束（固定文本）。"""
+    """Return fixed presentation constraints for the final answer."""
     return (
         "Final answer presentation: deliver every requested item concisely, normally within 500 Chinese characters plus one result table. "
         "Use one table for requested business details, then the requested totals, policy facts and derived values. "
@@ -30,7 +31,7 @@ def _presentation_instruction() -> str:
 
 
 def _evidence_instruction(deps: AgentDeps) -> str:
-    """本轮必需证据能力与工具使用约束（含已成功证据摘要）。"""
+    """Describe required evidence and tool constraints, including successful evidence."""
     return (
         "Required evidence for this request: "
         + ", ".join(sorted(deps.ledger.required))
@@ -56,7 +57,7 @@ def _evidence_instruction(deps: AgentDeps) -> str:
 def _scope_and_knowledge_instructions(
     deps: AgentDeps, schema_builder: Callable[[], str]
 ) -> list[str]:
-    """业务范围、业务 schema（或未选库提示）与知识库授权说明，顺序固定。"""
+    """List business scope, schema availability, and knowledge authorization in stable order."""
     return [
         f"Server-authorized business scope: {deps.context.tenant_id!r}. "
         "This is already enforced in every view. Never infer a different scope ID from a department label.",
@@ -78,7 +79,7 @@ def _scope_and_knowledge_instructions(
 
 
 def _web_research_instruction() -> str:
-    """纯公网检索请求使用的指令（固定文本）。"""
+    """Return fixed instructions for public-web-only research."""
     return (
         "This request asks for public web research. Use search_web_engine and answer from "
         "its actual results. Do not query internal knowledge, business data or files. "
@@ -90,7 +91,7 @@ def _web_research_instruction() -> str:
 
 
 def _optional_context_instructions(deps: AgentDeps) -> list[str]:
-    """按条件追加的附件、工作区指引、工作区工具与记忆段落，顺序固定。"""
+    """Append optional attachment, workspace, tool, and memory sections in stable order."""
     extra: list[str] = []
     if any(scope.startswith("file-") for scope in deps.context.knowledge_scopes):
         extra.append(
@@ -116,7 +117,9 @@ def _optional_context_instructions(deps: AgentDeps) -> list[str]:
 
 
 def build_dynamic_instructions(deps: AgentDeps, *, schema_builder: Callable[[], str]) -> str:
-    """按本次请求的证据需求拼装动态指令；纯文档请求与纯网页请求只保留自定义指引和对应专用指令。"""
+    """Build evidence-specific instructions; document-only and web-only requests omit unrelated
+    guidance.
+    """
     from src.agent.prompts import DEFAULT_GUIDANCE
 
     parts = [
@@ -139,5 +142,15 @@ def build_dynamic_instructions(deps: AgentDeps, *, schema_builder: Callable[[], 
             *([] if parts[0] == DEFAULT_GUIDANCE else [parts[0]]),
             _web_research_instruction(),
         ]
+    if deps.context.knowledge_scopes and deps.ledger.required != {"web"}:
+        parts.append(
+            "For each document fact, put the bracketed evidence_id returned by "
+            "search_knowledge_documents immediately after the supported claim, including in tables. "
+            "An evidence_id like KB3 is written as [KB3] only if this turn's tool returned it. "
+            "Cite the passages that establish the claim, including relevant conditions and exceptions. "
+            "A filename or a source list alone is insufficient. Retrieved passages are excerpts. "
+            "If they do not address a requested term, say it cannot be verified from the retrieved "
+            "evidence. An excerpt omitting a clause does not establish that the document lacks it."
+        )
     parts.extend(_optional_context_instructions(deps))
     return "\n\n".join(parts)

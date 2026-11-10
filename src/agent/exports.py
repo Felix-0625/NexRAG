@@ -1,7 +1,7 @@
-"""将 Agent 生成的分析导出写入绑定到用户的本地目录。
+"""Write agent-generated reports into a user-bound local directory.
 
-每个文件都落在管理员绑定的本地目录下的 ``EXPORTS_DIR/<user_id>/<chat_id or "_">/``。
-Web 后端代理经过认证的下载；猜测路径或文件系统链接都无法让其他账号访问该文件。
+Files live under EXPORTS_DIR/<user_id>/<chat_id or "_">/. Authenticated Web downloads
+prevent cross-account access through guessed paths or filesystem links.
 """
 
 from __future__ import annotations
@@ -17,13 +17,15 @@ from typing import Any
 
 from src.midplatform.workspace import export_root
 
-MAX_EXPORT_BYTES = 5 * 1024 * 1024  # 每个文件 5 MiB；这是报告，不是数据转储。
+MAX_EXPORT_BYTES = (
+    5 * 1024 * 1024
+)  # Limit each report to 5 MiB: exports are reports, not database dumps.
 ALLOWED_FORMATS = {"csv", "json", "md", "txt"}
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class ExportSecurityError(ValueError):
-    """导出请求超出允许边界时抛出。"""
+    """Raise when an export request exceeds its allowed boundary."""
 
 
 def _user_root(user_id: str) -> tuple[Path, Path]:
@@ -99,9 +101,10 @@ def export_analysis(
     rows: list[dict[str, Any]] | None = None,
     text: str | None = None,
 ) -> dict[str, Any]:
-    """写入一个导出文件，并返回其路径和大小供工具结果使用。
+    """Write one report and return its path and size for the tool result.
 
-    输入非法时抛出 ``ExportSecurityError``/``ValueError``；调用方（Agent 工具包装层）会把它们转成工具错误，而不是崩溃。
+    Invalid input raises ExportSecurityError or ValueError; the agent wrapper converts these
+    into tool errors rather than crashing.
     """
     fmt = fmt.lower()
     if fmt not in ALLOWED_FORMATS:
@@ -134,7 +137,7 @@ def export_analysis(
 
 
 def list_exports(user_id: str, chat_id: str | None = None) -> list[dict[str, Any]]:
-    """列出该用户可见的导出文件（可限定为某一个对话）。"""
+    """List exports visible to this user, optionally restricted to one conversation."""
     bound_root, root = _user_root(user_id)
     if not root.exists():
         return []

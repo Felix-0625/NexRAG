@@ -1,4 +1,4 @@
-"""只有部分证据的兜底答复，不得进入已完成答复的历史。"""
+"""Partial-evidence fallbacks must not become completed-answer history."""
 
 from src.agent.context import build_prompt
 

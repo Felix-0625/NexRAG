@@ -1,4 +1,4 @@
-"""受审计的本地工具权限，以及限定在账号范围内的文件检查。"""
+"""Audited local tools and account-scoped file inspection."""
 
 import asyncio
 from decimal import Decimal
@@ -62,6 +62,7 @@ def test_agent_passes_verified_user_to_file_tool(monkeypatch):
     seen = {}
 
     def inspect(path, **kw):
+        """Provide inspect test data or behavior for this scenario."""
         seen.update(kw)
         return {"content": "own file"}
 
@@ -71,6 +72,7 @@ def test_agent_passes_verified_user_to_file_tool(monkeypatch):
     deps = AgentDeps(UserContext(user_id="verified-user", email="u@local", tenant_id=""))
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with agent.override(
             model=TestModel(call_tools=["inspect_local_file"], custom_output_text="Read own file.")
         ):

@@ -1,6 +1,6 @@
-"""将展示的数值等式与受信任的工具公式比对，绝不执行。
+"""Compare displayed equations with trusted tool formulas without executing them.
 
-SQLGlot 已用于只读的业务表达式；复用它的 AST 可处理多余括号，而不会放过任意数值字面量。
+Reuse SQLGlot's AST to tolerate redundant parentheses without accepting arbitrary literals.
 """
 
 from __future__ import annotations
@@ -32,7 +32,9 @@ def _parse(text):
 
 
 def normalize_numeric_formulas(text: str, calculations, *, mask: bool) -> str:
-    """把文本中与受信任计算公式完全等价的算式归一化（末尾 ×100 改写为 %，mask 为真时整体替换）；其余原样保留。"""
+    """Normalize only formulas equivalent to trusted calculations; optionally mask the whole
+    equation.
+    """
     expected = set()
     for calculation in calculations:
         if calculation["operation"] not in {"percentage", "percent_change"}:
@@ -40,13 +42,14 @@ def normalize_numeric_formulas(text: str, calculations, *, mask: bool) -> str:
         expected.add(_parse(calculation["formula"]))
         if calculation["operation"] == "percent_change":
             left, right = (Decimal(o["value"]) for o in calculation["operands"])
-            # 该中间式由同一个受信任的运算计算得出。
+            # The same trusted operation produced this intermediate expression.
             expected.add(_parse(f"({left - right} / {right}) * 100"))
     if not expected:
         return text
     candidate = re.compile(r"(?<![\w.])[\d(][\d.,() +*/×÷−-]{2,400}")
 
     def replace(match):
+        """Normalize only the matched verified expression."""
         source = match[0]
         normalized = source.translate(str.maketrans({"×": "*", "÷": "/", "−": "-"}))
         try:
@@ -60,7 +63,7 @@ def normalize_numeric_formulas(text: str, calculations, *, mask: bool) -> str:
             return source
         if mask:
             return "verified formula"
-        # 只有末尾的百分比缩放常数属于展示层。
+        # Only a trailing percentage scale factor belongs to presentation.
         return re.sub(r"(?:×|\*)\s*100(?:\.0+)?\s*$", "%", source)
 
     return candidate.sub(replace, text)

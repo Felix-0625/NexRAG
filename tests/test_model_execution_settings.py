@@ -1,4 +1,4 @@
-"""本地 Instruct 覆盖设置不得影响云端模型或思考模型。"""
+"""Local Instruct overrides must not affect cloud or thinking models."""
 
 from src.agent.model_settings import agent_model_settings
 

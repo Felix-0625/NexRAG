@@ -20,6 +20,7 @@ flowchart LR
 - 仓库种子含 13 条人工合成样本。CLI 导入种子，管理员也可在「模型评价 → NexRAG → 合成评测」添加样本。旧版保存的 holdout 和 regression 失败记录会在挖掘和生成证据时被排除。
 - 评测复用生产 Agent 的运行与校验代码，使用隔离的 SQLite 数据和固定合成文档。管理员网页只可选已登记的本地模型。真实对话、业务库、知识库和导出目录均不进入共享评测。
 - `src/evaluation/evaluators.py` 用确定性规则打分。质量分取本条适用的成功率、工具覆盖和约束、答案匹配、SQL 行匹配、来源命中等分数的平均值。安全、工具错误率和耗时单列。重复运行时取平均，安全违规取最坏值。见 [合成评测规则](acceptance/evaluation-rules.md)。
+- 公开领域发布验收从空知识库和原始文档开始，走正式上传、自动摄入和问答接口。公开原题及官方标注用于自动评分，单独判断检索、生成、引用和性能门槛。见 [RAG 发布验收](acceptance/rag-quality-targets.md)。
 
 ```powershell
 uv run python scripts/run_experiment.py --splits train holdout regression --repeats 2 --record-synthetic-failures

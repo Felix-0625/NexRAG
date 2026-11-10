@@ -1,4 +1,4 @@
-"""恶意分析查询之后，真实数据源的哈希必须保持不变。"""
+"""Malicious analytical queries must leave real source hashes unchanged."""
 
 import hashlib
 import sqlite3

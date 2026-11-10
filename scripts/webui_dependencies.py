@@ -1,10 +1,10 @@
-"""固定版本的原生 WebUI 依赖组合，以及安全锁文件校验。"""
+"""Pinned native WebUI dependency set with security-lock validation."""
 
 from pathlib import Path
 
 
 def webui_requirements(root: Path) -> str:
-    """把存在漏洞的上游固定版本替换为经审查、可复现的原生固定版本。"""
+    """Replace vulnerable upstream pins with reviewed reproducible native versions."""
     upstream = (root / "webui/backend/requirements-slim.txt").read_text(encoding="utf-8")
     replacements = {}
     for line in (
@@ -25,11 +25,11 @@ def webui_requirements(root: Path) -> str:
             result.append(line)
     if set(replacements) != applied:
         raise RuntimeError("Security replacements no longer match the pinned upstream requirements")
-    # 保持精简的 UI 运行时，同时恢复其现有的本地 STT 路径。
-    # PyAV（faster-whisper 的依赖）自带音频解码库，因此不需要系统 FFmpeg、
-    # CUDA、torch 或外部转写服务。faster-whisper 1.2.1 仍会向 PyAV 传入
-    # metadata_errors，而 PyAV 19 已移除该参数（上游 SYSTRAN/faster-whisper#1589）。
-    # 在 Whisper 发布包含上游修复的版本之前，保留兼容的已发布解码器版本。
+    # Keep the runtime slim while restoring its existing local speech-to-text path.
+    # PyAV bundles decoding libraries, avoiding system FFmpeg, CUDA, torch,
+    # and external transcription. faster-whisper 1.2.1 still passes metadata_errors,
+    # which PyAV 19 removed (SYSTRAN/faster-whisper#1589).
+    # Keep a compatible released decoder until Whisper ships the upstream fix.
     return (
         "\n".join(result)
         + "\npython-dotenv==1.2.4\nfilelock==4.2.5\nfaster-whisper==1.2.1\nav==18.1.0\n"
@@ -37,11 +37,12 @@ def webui_requirements(root: Path) -> str:
 
 
 def locked_webui_requirements(root: Path) -> str:
-    """拒绝过期的锁文件，而不是悄悄解析出新的传递依赖包。"""
+    """Reject stale locks instead of silently resolving new transitive dependencies."""
     requirements = webui_requirements(root)
     lock = (root / "scripts/webui-requirements.lock").read_text(encoding="utf8")
 
     def pins(text):
+        """Extract normalized exact dependency pins from requirements text."""
         result = {}
         for line in text.splitlines():
             entry = line.split("#", 1)[0].strip()

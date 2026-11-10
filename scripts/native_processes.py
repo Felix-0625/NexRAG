@@ -1,6 +1,7 @@
-"""只监管某一次原生启动所拥有的进程树。
+"""Supervise only process trees owned by one native launch.
 
-调用方提供状态目录和进度报告器。这些辅助函数不会发现或终止已有的服务。
+Callers provide state directories and progress reporting. Never discover or stop existing
+services owned by someone else.
 """
 
 import os
@@ -15,19 +16,23 @@ from typing import IO
 
 @dataclass
 class Child:
+    """Owned child process and its associated log handle."""
+
     name: str
     process: subprocess.Popen
     log: IO
 
 
 class WindowsJob:
-    """只终止本次启动的进程树，包括 Vite/Ollama 工作进程。"""
+    """Stop only this launch's process tree, including Vite and Ollama workers."""
 
     def __init__(self) -> None:
         import ctypes
         from ctypes import wintypes
 
         class BasicLimits(ctypes.Structure):
+            """Windows job basic-limit structure matching the native API layout."""
+
             _fields_ = [
                 ("process_time", ctypes.c_int64),
                 ("job_time", ctypes.c_int64),
@@ -41,6 +46,8 @@ class WindowsJob:
             ]
 
         class ExtendedLimits(ctypes.Structure):
+            """Windows job extended-limit structure matching the native API layout."""
+
             _fields_ = [
                 ("basic", BasicLimits),
                 ("io", ctypes.c_uint64 * 6),
@@ -73,20 +80,22 @@ class WindowsJob:
             raise ctypes.WinError(ctypes.get_last_error())
 
     def assign(self, process: subprocess.Popen) -> None:
-        """把子进程加入该 job，之后随 job 关闭而被终止；失败时抛出 WinError。"""
+        """Assign a child to the job for termination on close; raise WinError on failure."""
         import ctypes
 
         if not self.kernel.AssignProcessToJobObject(self.handle, int(process._handle)):
             raise ctypes.WinError(ctypes.get_last_error())
 
     def close(self) -> None:
-        """关闭 job 句柄；因设置了 KILL_ON_JOB_CLOSE，仍在 job 内的进程会被终止。可重复调用。"""
+        """Idempotently close the job, terminating members through KILL_ON_JOB_CLOSE."""
         if self.handle:
             self.kernel.CloseHandle(self.handle)
             self.handle = None
 
 
 class Supervisor:
+    """Manage only child processes created by this launch."""
+
     def __init__(self, state: Path, report) -> None:
         self.state = state
         self.report = report
@@ -94,7 +103,9 @@ class Supervisor:
         self.job = WindowsJob() if os.name == "nt" else None
 
     def start(self, name: str, args: list, cwd: Path, env: dict) -> None:
-        """启动子进程，输出写入 logs/<name>.log，并在 Windows 上加入 job；启动期退出或隔离失败时终止进程并抛出 RuntimeError，不绕过隔离。"""
+        """Start a logged child and require Windows job isolation; stop and raise on early exit or
+        isolation failure.
+        """
         log_path = self.state / "logs" / f"{name}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("w", encoding="utf-8")
@@ -114,9 +125,9 @@ class Supervisor:
             )
             try:
                 if self.job:
-                    # 进程在 CreateProcess 与加入 job 之间退出时，Windows 同样会返回
-                    # ERROR_ACCESS_DENIED。这属于服务启动失败，不是要求提权或关闭
-                    # 隔离的请求；需保留真实的退出码/日志上下文。
+                    # Windows may return ERROR_ACCESS_DENIED if a child exits between CreateProcess
+                    # and job assignment; treat this as startup failure, not a request for elevation
+                    # or weaker isolation, and preserve exit-code and log context.
                     code = process.poll()
                     if code is not None:
                         raise RuntimeError(
@@ -148,7 +159,7 @@ class Supervisor:
         self.children.append(Child(name, process, log))
 
     def check(self) -> None:
-        """任一受管子进程已退出则抛出 RuntimeError，附带退出码和日志路径。"""
+        """Raise with exit code and log path if any owned child exits."""
         for child in self.children:
             if child.process.poll() is not None:
                 raise RuntimeError(
@@ -157,11 +168,11 @@ class Supervisor:
                 )
 
     def wait_http(self, endpoints: dict[str, str], timeout: float = 1200) -> None:
-        """轮询各端点（绕过系统代理）直到全部返回 200；期间子进程退出或超过 timeout 秒则抛出 RuntimeError，并定期输出等待提示。"""
+        """Poll loopback endpoints without proxies until healthy, failing on child exit or timeout."""
         remaining = dict(endpoints)
         deadline = time.monotonic() + timeout
         next_report = time.monotonic() + 20
-        # 回环健康检查请求必须绕过系统代理。
+        # Loopback health checks must bypass system proxies.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         while remaining:
             self.check()
@@ -185,7 +196,9 @@ class Supervisor:
                 time.sleep(0.5)
 
     def close(self) -> None:
-        """按启动的逆序终止子进程（10 秒内未退出则强制结束）、关闭日志文件并释放 job。"""
+        """Stop children in reverse order, force after ten seconds, close logs, and release the
+        job.
+        """
         for child in reversed(self.children):
             if child.process.poll() is None:
                 child.process.terminate()

@@ -1,4 +1,4 @@
-"""三层召回、用户/租户/会话隔离，以及防投毒措施。"""
+"""Three-layer recall, owner/tenant/session isolation, and poisoning defenses."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from src.memory.vectors import InMemoryVectorIndex
 
 
 def cand(value, *, attribute, scope="tenant", kind="fact"):
+    """Provide cand test data or behavior for this scenario."""
     return MemoryCandidate(
         scope=scope,
         kind=kind,
@@ -28,14 +29,17 @@ def cand(value, *, attribute, scope="tenant", kind="fact"):
 
 @pytest.fixture
 def service(isolated_ops, embedder):
+    """Create an isolated memory service for the scenario."""
     return MemoryService(isolated_ops, InMemoryVectorIndex(), embedder)
 
 
 def run(coro):
+    """Run this scenario in an isolated asynchronous context."""
     return asyncio.run(coro)
 
 
 def values(memories):
+    """Provide values test data or behavior for this scenario."""
     return {m.record.value_text for m in memories}
 
 
@@ -65,7 +69,7 @@ def test_tenant_facts_do_not_leak_across_tenants(service):
 
 
 def test_global_scope_only_accepts_preferences_and_profile(service):
-    # 被提议为全局的业务事实，会降级到租户层。
+    # Demote proposed global business facts to tenant scope.
     result = run(
         service.write(
             cand("ships from SP", attribute="warehouse", scope="global"),
@@ -130,6 +134,7 @@ def test_disputed_memories_are_flagged_in_prompt_block(service):
 
 def test_extractor_rejects_injection_and_redacts_pii():
     async def completer(_system, user):
+        """Provide completer test data or behavior for this scenario."""
         assert "13812345678" not in user
         return json.dumps(
             {
@@ -177,13 +182,13 @@ def test_fallback_index_writes_are_queued_for_qdrant(isolated_ops, embedder):
     )
     queued = isolated_ops.query("SELECT action FROM vector_outbox")
     assert [row["action"] for row in queued] == ["upsert"]
-    # 持续故障期间的维护，不能仅因临时内存索引接收了任务，
-    # 就确认该任务已完成。
+    # Maintenance during an outage cannot acknowledge durable delivery
+    # just because the temporary in-memory index accepted the task.
     assert run(svc.store.replay_outbox(embedder)) == 0
     assert [row["action"] for row in isolated_ops.query("SELECT action FROM vector_outbox")] == [
         "upsert"
     ]
-    # 真实索引恢复后，重放会把记录迁到其中并清空队列。
+    # Recovery replay migrates records to the real index and drains the queue.
     svc.store.index = InMemoryVectorIndex()
     assert run(svc.store.replay_outbox(embedder)) == 1
     assert isolated_ops.query("SELECT * FROM vector_outbox") == []

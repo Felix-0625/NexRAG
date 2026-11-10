@@ -16,6 +16,12 @@ from haystack import Document, component
 from app.pipelines import indexing
 
 
+@pytest.fixture(autouse=True)
+def ready_payload_indexes(monkeypatch):
+    """These orchestration tests stub Qdrant; first-write indexes have dedicated tests."""
+    monkeypatch.setattr("app.services.qdrant_setup.ensure_payload_indexes", lambda **_: True)
+
+
 def test_init_pipeline_calls_warm_up(monkeypatch):
     """``init_pipeline()`` must call ``Pipeline.warm_up()`` so the sparse
     embedder downloads its model at startup, not on first request.
@@ -235,6 +241,26 @@ def _stamped_version(mock_pipeline) -> str:
     """The ingest_version run_indexing_pipeline stamped onto the pipeline meta."""
     (payload,), _ = mock_pipeline.run.call_args
     return payload["converter"]["meta"]["ingest_version"]
+
+
+def test_indexing_derives_search_title_from_upload_metadata(monkeypatch):
+    _mock_raw_client(monkeypatch)
+    mock_pipeline = _mock_pipeline_run(monkeypatch)
+    monkeypatch.setattr(indexing._active_settings(), "enable_filename_retrieval", True)
+    metadata = {
+        "file_id": "f-title",
+        "collection_name": "kb-1",
+        "filename": r"C:\ignored\Privacy  Guide.PDF",
+        "overwrite": False,
+    }
+
+    indexing.run_indexing_pipeline("/tmp/temp.pdf", metadata)
+
+    (payload,), _ = mock_pipeline.run.call_args
+    indexed_metadata = payload["converter"]["meta"]
+    assert indexed_metadata["search_title"] == "Privacy Guide"
+    assert indexed_metadata["filename"] == metadata["filename"]
+    assert "search_title" not in metadata
 
 
 def test_overwrite_writes_new_version_before_sweeping_stale(monkeypatch):

@@ -1,4 +1,4 @@
-"""NexRAG 后端服务的 FastAPI 应用入口。"""
+"""FastAPI entry point for the NexRAG backend."""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,9 +22,9 @@ app = FastAPI(
     version=__version__,
 )
 
-# Open WebUI 后端以服务端到服务端方式调用 NexRAG（Authorization 头，无 cookie），
-# 不受此策略影响。CORS 只对浏览器直连 NexRAG 有意义；"*" 搭配 allow_credentials
-# 会让任意来源都能反射带凭据的请求，所以改用显式、可配置的来源列表
+# Open WebUI uses server-to-server Authorization headers, not cookies.
+# CORS protects direct browser access; wildcard credentialed origins
+# would reflect arbitrary sites, so require an explicit configurable allowlist.
 # （settings.ALLOWED_ORIGINS）。
 _allowed_origins = [
     origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",") if origin.strip()
@@ -37,7 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 注册 OpenAI 兼容的 API 路由。
+
 app.include_router(api_router, prefix=settings.API_V1_STR)
 app.include_router(ops_router, prefix=settings.API_V1_STR)
 app.include_router(tenant_router, prefix=settings.API_V1_STR)
@@ -52,8 +52,9 @@ app.include_router(mcp_router, prefix=settings.API_V1_STR)
 
 @app.on_event("startup")
 def protect_historical_conversation_traces():
-    # 保留历史记录，但隐私策略变更后，不得再把旧的个人对话
-    # 默默复用为全局训练/优化素材。
+    # Preserve history without silently reusing private conversations
+    # as shared training or optimization data after a privacy-policy change.
+    """Prevent historical private conversations from contributing shared learning."""
     from src.midplatform.ops_store import get_ops_store
 
     get_ops_store().execute(
@@ -64,7 +65,7 @@ def protect_historical_conversation_traces():
 
 @app.get("/health")
 async def health_check():
-    """存活与就绪健康检查探针。"""
+    """Probe service liveness and readiness."""
     return {"status": "ok", "project": settings.PROJECT_NAME}
 
 

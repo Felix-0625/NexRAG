@@ -1,7 +1,7 @@
-"""解析某次请求应使用哪个产物版本（production 或 canary）。
+"""Resolve production or canary artifacts for one request.
 
-存在 staging 版本时，按用户 ID 哈希选出一部分稳定的用户使用它，
-使同一用户在观察窗口内始终看到同一版本；其余用户使用 production。
+When staging exists, hash user IDs into stable cohorts so users keep the same versions
+throughout the observation window; everyone else uses production.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ from src.evolution.artifacts import ArtifactRegistry, registry
 
 @dataclass
 class ActiveArtifacts:
+    """Prompt and parameter versions selected for one user request."""
+
     prompt: str
     params: dict[str, Any]
     versions: dict[str, str] = field(default_factory=dict)
@@ -23,14 +25,14 @@ class ActiveArtifacts:
 
 
 def in_canary(user_id: str, ratio: float | None = None) -> bool:
-    """按用户 ID 的哈希稳定地判断是否落入灰度人群；ratio 缺省取 CANARY_RATIO，同一用户结果恒定。"""
+    """Choose stable canary membership from the user hash and configured or explicit ratio."""
     ratio = settings.CANARY_RATIO if ratio is None else ratio
     bucket = int(hashlib.sha256(f"canary:{user_id}".encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
     return bucket < ratio
 
 
 def resolve(user_id: str, reg: ArtifactRegistry | None = None) -> ActiveArtifacts:
-    """为该用户选出本次使用的 prompt 与参数版本：灰度用户且存在 staging 版本时用 staging，否则用 production。"""
+    """Resolve prompt and parameter versions, preferring staging only for eligible canary users."""
     reg = reg or registry
     canary_user = in_canary(user_id)
     chosen: dict[str, Any] = {}

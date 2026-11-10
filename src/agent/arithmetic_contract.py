@@ -1,6 +1,6 @@
-"""将显式的文档算术请求与检索、计算和最终输出绑定。
+"""Bind explicit document arithmetic requests to retrieval, calculation, and final output.
 
-只识别受支持的显式数值意图；这并不能证明模型选对了来源指标、日期或货币单位。
+Recognizing supported numeric intent does not prove correct source metrics, dates, or currency.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from decimal import Decimal
 
 
 def requested_arithmetic(text: str) -> set[str]:
-    """匹配运算请求，不硬编码实体或基准数据。"""
+    """Match arithmetic requests without hard-coding entities or benchmark data."""
     if re.search(
         r"口径|定义|含义|公式是什么|计算方法|definition|how to calculate|what is the formula",
         text,
@@ -22,7 +22,7 @@ def requested_arithmetic(text: str) -> set[str]:
     try:
         indexed = requested_comparison(text) is not None
     except ValueError:
-        # 显式但未解析的比较仍需要绑定来源的契约，不能退化为无类型的货币相减。
+        # An unresolved explicit comparison must not degrade to untyped currency subtraction.
         indexed = True
     if indexed:
         return {"arithmetic:indexed_return_difference"}
@@ -41,13 +41,13 @@ def requested_arithmetic(text: str) -> set[str]:
 
 
 def completed_arithmetic(entries, prompt: str = "") -> set[str]:
-    """返回账本中已完成的算术义务；百分比变化须与请求的期间绑定一致才算完成。"""
+    """Return completed arithmetic obligations; percentage changes must match requested periods."""
     from src.agent.source_facts import period_request
 
     try:
         temporal_request = period_request(prompt)
     except ValueError:
-        temporal_request = True  # 显式但未解析的期间不属于纯算术任务。
+        temporal_request = True  # Unresolved explicit periods are not a pure arithmetic task.
     completed = {
         "arithmetic:" + entry["data"]["operation"]
         for entry in entries
@@ -72,7 +72,7 @@ def completed_arithmetic(entries, prompt: str = "") -> set[str]:
 
 
 def arithmetic_answer_issues(answer: str, required, entries) -> list[str]:
-    """执行了计算却没有给出结果，不算完成。"""
+    """Reject answers that calculate a result but omit it."""
     from src.agent.arithmetic_claims import _percentages
     from src.agent.grounding import _numbers
 
@@ -88,7 +88,7 @@ def arithmetic_answer_issues(answer: str, required, entries) -> list[str]:
             and entry["data"].get("operation") == operation
         ]
         if not calculations:
-            continue  # 缺失的运算由 ledger 另行报告。
+            continue  # The ledger reports missing operations separately.
         actual = set()
         for calculation in calculations:
             actual.add(Decimal(calculation["result"]))
@@ -107,7 +107,7 @@ def arithmetic_answer_issues(answer: str, required, entries) -> list[str]:
 
 
 def _export_instruction() -> str:
-    """显式授权报告导出时附加的 export_analysis 使用说明（固定文本）。"""
+    """Return fixed export instructions only when report export is explicitly authorized."""
     return (
         " The user explicitly authorized a report export. export_analysis is an allowed "
         "server-managed report write, not arbitrary filesystem access. After retrieving "
@@ -121,7 +121,9 @@ def _export_instruction() -> str:
 
 
 def _indexed_return_instruction(ledger) -> str:
-    """指数收益差异：来源事实已就绪时返回预备参数说明，否则返回空串。"""
+    """Describe prepared indexed-return operands when source facts are ready, otherwise return
+    empty text.
+    """
     import json
 
     from src.agent.indexed_returns import prepare_comparison
@@ -143,7 +145,9 @@ def _indexed_return_instruction(ledger) -> str:
 
 
 def _percent_change_instruction(ledger) -> str:
-    """百分比变化：时间维度来源事实已就绪时返回预备参数说明，否则返回空串。"""
+    """Describe prepared period-change operands when source facts are ready, otherwise return empty
+    text.
+    """
     import json
 
     from src.agent.source_facts import period_calculation_inputs
@@ -163,7 +167,7 @@ def _percent_change_instruction(ledger) -> str:
 
 
 def _prepared_instruction(ledger) -> str:
-    """汇总导出与预备算术参数说明；后出现的预备参数说明会覆盖先前的内容。"""
+    """Combine export and prepared-operand guidance, with later operand guidance taking precedence."""
     prepared = ""
     if "export" in ledger.required:
         prepared += _export_instruction()
@@ -179,7 +183,9 @@ def _prepared_instruction(ledger) -> str:
 
 
 def document_instructions(ledger, collection_count: int) -> str:
-    """生成仅文档请求的完整指令：固定正文、必需证据、已成功证据摘要和预备算术参数。"""
+    """Build document-only instructions with requirements, successful evidence, and prepared
+    operands.
+    """
     prepared = _prepared_instruction(ledger)
     return (
         _document_only_instruction(collection_count)
@@ -192,7 +198,7 @@ def document_instructions(ledger, collection_count: int) -> str:
 
 
 def _document_only_instruction(collection_count: int) -> str:
-    """仅文档请求的固定指令正文（不含必需证据与已成功证据摘要）。"""
+    """Return fixed document-only guidance without evidence requirements or summaries."""
     return (
         "This request is explicitly document-only. SQL, filesystem, web and external tools are not part of it. "
         f"Authorized knowledge collections: {collection_count}. "

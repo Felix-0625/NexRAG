@@ -41,6 +41,7 @@ from app.pipelines.embedders import (
     build_sparse_embedder,
 )
 from app.pipelines.splitter import build_splitter
+from app.services.filenames import filename_search_title
 
 log = logging.getLogger(__name__)
 
@@ -276,31 +277,7 @@ def _build_pipeline(s: Settings, document_store: QdrantDocumentStore) -> Pipelin
 
 
 def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
-    """Run the configured pipeline against a single local file.
-
-    Returns an :class:`IndexingResult` (chunk count + extraction summary).
-
-    ``meta`` carries the document metadata (``file_id``, ``collection_name``,
-    ``collection_type``, ``name``, ``source``, ``user_id``, ``overwrite``).
-    Control fields (``overwrite``) are stripped before the meta hits Qdrant.
-
-    Versioned (blue/green) overwrite: each run stamps ``meta.ingest_version``
-    onto its chunks, changing their Haystack document IDs so they coexist with
-    the previous version's points instead of upserting over them. The old
-    version is only deleted *after* the new one is fully written (and only
-    when it produced at least one chunk — a zero-chunk extraction never
-    replaces a good index with nothing). A failed run tears down only its own
-    version, so neither a failed overwrite nor a failed append
-    (``overwrite=false``) can destroy previously indexed data. Note the
-    version stamp means an ``overwrite=false`` retry with identical content
-    now accumulates duplicate points rather than silently upserting onto the
-    same IDs — Open WebUI always sends ``overwrite=true``, so this only
-    affects manual multipart callers.
-
-    Concurrent ingests of the same ``file_id`` are serialized via
-    :func:`_per_file_id_lock` — see the comment on ``_file_id_locks`` for
-    the race this closes (sec.md Finding 7).
-    """
+    """Index one file under its lock, publishing or rolling back its new version."""
     if _pipeline is None or _document_store is None:
         raise RuntimeError("pipeline not initialized; call init_pipeline() first")
 
@@ -311,6 +288,10 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
     with _per_file_id_lock(file_id):
         pipeline_meta = _strip_control_fields(meta)
         pipeline_meta["ingest_version"] = ingest_version
+        if _active_settings().enable_filename_retrieval:
+            title = filename_search_title(pipeline_meta.get("filename", ""))
+            if title:
+                pipeline_meta["search_title"] = title
         try:
             started = time.monotonic()
             # include_outputs_from exposes the converter's stamped meta (the
@@ -323,7 +304,9 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
             metrics.ingest_duration_seconds.observe(time.monotonic() - started)
 
             chunks_count = result["writer"]["documents_written"]
-            extraction = _extraction_summary(result)
+            extraction = _prepare_written_version(
+                result, chunks_count, file_id, meta, ingest_version
+            )
             metrics.ingest_chunks.observe(chunks_count)
             if overwrite and chunks_count > 0:
                 # New version fully written — sweep every other version of this
@@ -354,6 +337,18 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
                 extraction["engine"],
                 signal,
             )
+            if overwrite and chunks_count > 0 and _active_settings().enable_graph_rag:
+                try:
+                    from app.services.entity_graph import get_graph
+
+                    get_graph().remove_versions(
+                        _active_settings().qdrant_index,
+                        file_id,
+                        meta["collection_name"],
+                        keep=ingest_version,
+                    )
+                except Exception:
+                    log.exception("Could not prune old entity-graph rows")
             return IndexingResult(chunks_count=chunks_count, extraction=extraction)
         except Exception:
             log.exception(
@@ -364,6 +359,18 @@ def run_indexing_pipeline(file_path: str, meta: dict) -> IndexingResult:
             # Tear down only THIS run's points — the previously indexed
             # version (if any) stays live, whatever the overwrite mode.
             _delete_ingest_version(file_id, ingest_version)
+            if _active_settings().enable_graph_rag:
+                try:
+                    from app.services.entity_graph import get_graph
+
+                    get_graph().remove_versions(
+                        _active_settings().qdrant_index,
+                        file_id,
+                        meta["collection_name"],
+                        remove=ingest_version,
+                    )
+                except Exception:
+                    log.exception("Failed graph-version cleanup")
             raise
 
 
@@ -520,9 +527,35 @@ def delete_by_file_id(file_id: str) -> int:
             collection_name=_active_settings().qdrant_index,
             points_selector=_file_id_filter(file_id),
         )
+        if _active_settings().enable_graph_rag:
+            try:
+                from app.services.entity_graph import get_graph
+
+                get_graph().remove_versions(_active_settings().qdrant_index, file_id)
+            except Exception:
+                log.exception("Could not prune deleted file from entity graph")
         return count
 
 
 def _strip_control_fields(meta: dict) -> dict:
     """Drop fields that are pipeline-control, not Qdrant payload."""
     return {k: v for k, v in meta.items() if k not in {"overwrite"}}
+
+
+def _prepare_written_version(result, chunks_count, file_id, meta, ingest_version):
+    if chunks_count > 0:
+        # A new collection is created lazily by the first writer. The
+        # startup hook cannot index a collection that does not exist.
+        from app.services.qdrant_setup import ensure_payload_indexes
+
+        if not ensure_payload_indexes(
+            active_settings=_active_settings(), active_ingest_version=ingest_version
+        ):
+            raise RuntimeError("The written collection is unavailable for payload indexing")
+    extraction = _extraction_summary(result)
+    if chunks_count > 0 and _active_settings().enable_graph_rag:
+        from app.services.entity_graph import index_version
+
+        graph_receipt = index_version(file_id, meta["collection_name"], ingest_version)
+        log.info("Entity graph indexed version %s: %s", ingest_version, graph_receipt)
+    return extraction

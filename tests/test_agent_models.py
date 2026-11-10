@@ -16,10 +16,10 @@ from src.midplatform.data_policy import save_account_policy, save_resource_polic
 
 
 def test_anthropic_sdk_serializes_messages_and_round_trips_tools(monkeypatch):
-    """验证真实 SDK 的序列化，而不只是 provider 的构造。
+    """Exercise real SDK serialization, not just provider construction.
 
-    Anthropic 2.x 把 BetaMessageParam 改成了联合类型。PydanticAI 2.59 构造该别名
-    时在发出 HTTP 请求前就失败，仅测试构造函数的用例漏掉了这一问题。
+    Anthropic 2.x changed BetaMessageParam into a union. PydanticAI 2.59 tried constructing
+    that alias before HTTP; constructor-only coverage missed the failure.
     """
     from anthropic.types.beta import BetaMessage
     from pydantic_ai import Agent
@@ -34,6 +34,7 @@ def test_anthropic_sdk_serializes_messages_and_round_trips_tools(monkeypatch):
     )
 
     def response(content, stop_reason):
+        """Provide response test data or behavior for this scenario."""
         return BetaMessage.model_validate(
             {
                 "id": "msg-synthetic",
@@ -67,6 +68,7 @@ def test_anthropic_sdk_serializes_messages_and_round_trips_tools(monkeypatch):
     called = []
 
     def connection_check(value: str) -> str:
+        """Provide connection check test data or behavior for this scenario."""
         called.append(value)
         return value
 
@@ -86,12 +88,14 @@ def test_anthropic_sdk_serializes_messages_and_round_trips_tools(monkeypatch):
 
 @pytest.fixture
 def api(monkeypatch):
+    """Provide an isolated test API client."""
     monkeypatch.setattr(settings, "NEXRAG_SHARED_API_KEY", "k" * 32)
     monkeypatch.setattr(settings, "NEXRAG_USER_JWT_SECRET", "s" * 32)
     return TestClient(app)
 
 
 def headers(role="admin"):
+    """Build signed request headers for the test identity."""
     claims = dict(
         sub="model-user",
         email="model@local.test",
@@ -108,6 +112,7 @@ def headers(role="admin"):
 
 
 def form(**changes):
+    """Provide form test data or behavior for this scenario."""
     return dict(
         name="Second model",
         provider="custom",
@@ -228,10 +233,12 @@ def test_runner_uses_request_model_without_replacing_shared_tools(api, monkeypat
     used = []
 
     def build(record):
+        """Provide build test data or behavior for this scenario."""
         used.append(record["model_name"])
         return TestModel(call_tools=["plan_analysis", "search_knowledge_documents"])
 
     async def search(*args, **kwargs):
+        """Provide search test data or behavior for this scenario."""
         return [{"source": "test-doc", "content": "known evidence", "score": 0.9}]
 
     monkeypatch.setattr(agent_models, "build_model", build)
@@ -286,7 +293,7 @@ def test_provider_profiles_preserve_reasoning_model_compatibility(api):
 def test_deepseek_thinking_models_do_not_send_unsupported_forced_tool_choice(
     monkeypatch, model_name
 ):
-    """验证真实 SDK 的请求路径；思考模式下 API 会拒绝 'required'。"""
+    """Exercise the real SDK request path because thinking APIs reject required tool choice."""
     from openai.types.chat import ChatCompletion
     from pydantic_ai import Agent
 
@@ -322,6 +329,7 @@ def test_deepseek_thinking_models_do_not_send_unsupported_forced_tool_choice(
     monkeypatch.setattr(model.client.chat.completions, "create", sdk)
 
     def lookup() -> str:
+        """Provide lookup test data or behavior for this scenario."""
         return "synthetic"
 
     asyncio.run(

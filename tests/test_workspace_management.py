@@ -17,12 +17,14 @@ from src.midplatform.tenant_access import Principal, allowed_tenants, create_ten
 
 @pytest.fixture
 def api(monkeypatch):
+    """Provide an isolated test API client."""
     monkeypatch.setattr(settings, "NEXRAG_SHARED_API_KEY", "k" * 32)
     monkeypatch.setattr(settings, "NEXRAG_USER_JWT_SECRET", "s" * 32)
     return TestClient(app)
 
 
 def headers(role="admin", scopes=None):
+    """Build signed request headers for the test identity."""
     claims = {
         "sub": "workspace-test",
         "email": "workspace@example.local",
@@ -69,6 +71,7 @@ def test_wrong_database_role_has_safe_actionable_guidance(api, monkeypatch):
     from src.midplatform.readonly import ReadOnlyRoleRequired
 
     def denied(*args):
+        """Provide denied test data or behavior for this scenario."""
         raise ReadOnlyRoleRequired("业务账号仍有写入或建表权限，请由数据库管理员提供专用只读账号")
 
     monkeypatch.setattr(workspace, "discover", denied)
@@ -84,6 +87,7 @@ def test_wrong_database_role_has_safe_actionable_guidance(api, monkeypatch):
 
 def test_driver_failure_does_not_expose_dsn_or_password(api, monkeypatch):
     def failed(*args):
+        """Provide failed test data or behavior for this scenario."""
         raise RuntimeError("Driver failure: password=synthetic-secret")
 
     monkeypatch.setattr(workspace, "discover", failed)
@@ -109,7 +113,7 @@ def test_switching_business_source_requires_fresh_grants_and_policy(api, isolate
     assert allowed_tenants(Principal("employee", "employee@local", "user")) == {}
     assert resource_policy("tenant", "sales")["classification"] == "internal"
     assert workspace.get_setting("business_source_generation") == 1
-    # 幂等的界面重试，不得撤销激活之后才分配的授权。
+    # Idempotent UI retries must not revoke grants assigned after activation.
     set_grant("employee@local", "sales", True, "admin")
     assert not api.post("/v1/workspace/connections/default/activate", headers=headers()).json()[
         "grants_reset"
@@ -170,6 +174,7 @@ async def test_no_knowledge_grant_does_not_query_shared_or_other_users_collectio
     called = []
 
     async def handler(request):
+        """Provide handler test data or behavior for this scenario."""
         called.append(request)
         raise AssertionError("No retrieval call is allowed")
 

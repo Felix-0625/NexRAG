@@ -1,7 +1,7 @@
-"""单一 PydanticAI Agent，整合受治理的业务、文档、网页搜索、文件与记忆工具。
+"""Single PydanticAI agent with governed business, document, web, file, and memory tools.
 
-每次请求中，runner 解析当前生效的制品版本（提示词指引与调优参数，可能是灰度版本），
-召回长期记忆，运行 Agent 并记录 trace，再在后台根据用户消息安排记忆抽取。
+Each request resolves active prompt and parameter artifacts (possibly canary versions),
+recalls memory, runs the agent, records a trace, and schedules extraction from user messages.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from pydantic_ai.toolsets import FunctionToolset
 from src.agent.authorization import memory_helpers_allowed
 from src.agent.context import build_prompt
 from src.agent.core_tools import register_core_tools
-from src.agent.dependencies import AgentDeps, UserContext  # noqa: F401 - 稳定的公开导入
-from src.agent.execution import AgentExecution, drain_background  # noqa: F401 - 稳定的公开导入
+from src.agent.dependencies import AgentDeps, UserContext  # noqa: F401 - Stable public re-export.
+from src.agent.execution import AgentExecution, drain_background  # noqa: F401 - Stable public re-export.
 from src.agent.model_hooks import build_model_hooks, validated_model_settings
 from src.agent.output_validator import register_output_validator
 from src.agent.prompts import SAFETY_PREFIX
@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 
 class AgenticRunner(AgentExecution):
-    """复用同一个 PydanticAI Agent，同时为每次运行提供全新的授权信息。"""
+    """Reuse one agent while providing fresh authorization for every run."""
 
     def __init__(self):
         self._agent: Agent[AgentDeps, str] | None = None
@@ -42,7 +42,7 @@ class AgenticRunner(AgentExecution):
 
         from src.agent.metric_results import BusinessReport
 
-        # 安全前缀固定不变；指引与记忆块按次运行注入，使演进后的提示词版本无需重启即可生效。
+        # Keep the safety prefix immutable; inject guidance and memory per run so updates need no restart.
         agent = Agent(
             model,
             system_prompt=SAFETY_PREFIX,
@@ -67,6 +67,7 @@ class AgenticRunner(AgentExecution):
 
         @agent.instructions
         def dynamic_instructions(ctx: RunContext[AgentDeps]) -> str:
+            """Build fresh scope- and evidence-specific instructions for this run."""
             from src.agent.agent_instructions import build_dynamic_instructions
 
             return build_dynamic_instructions(
@@ -88,10 +89,10 @@ class AgenticRunner(AgentExecution):
     async def _prepare(
         self, prompt: str, context: UserContext
     ) -> tuple[AgentDeps, ActiveArtifacts]:
-        """解析本次运行生效的制品版本，并召回长期记忆。"""
+        """Resolve active artifacts and recall long-term memory for this run."""
         try:
             active = resolve(context.user_id)
-        except Exception:  # noqa: BLE001 - 回退到内置默认值
+        except Exception:  # noqa: BLE001 - Fall back to built-in defaults.
             log.exception("Artifact resolution failed; using defaults")
             active = ActiveArtifacts(prompt="", params=default_params())
         deps = AgentDeps(context=context, params=active.params, guidance=active.prompt or None)

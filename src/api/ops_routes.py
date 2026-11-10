@@ -1,6 +1,6 @@
-"""运维 API：运行记录、评测、提案和用户反馈。
+"""Operations API for traces, evaluations, proposals, and feedback.
 
-管理操作要求签名身份和管理员角色；反馈仅允许回答所属用户提交。
+Management requires a signed administrator identity; only answer owners may submit feedback.
 """
 
 from __future__ import annotations
@@ -25,7 +25,9 @@ router = APIRouter(prefix="/ops", tags=["ops"])
 
 @router.get("/overview")
 def overview(days: float = Query(7, gt=0, le=90), _: Principal = Depends(require_admin)):
-    """管理员查看最近若干天（最多 90）的运行概览：trace 总量与时延、评分均值、按日趋势、提案积压和线上产物版本。"""
+    """Summarize up to 90 days of traces, latency, scores, trends, backlog, and production
+    artifacts.
+    """
     store = get_ops_store()
     since = now() - days * 86_400
     totals = (
@@ -63,7 +65,7 @@ def list_traces(
     status: str | None = None,
     principal: Principal = Depends(require_admin),
 ):
-    """管理员列出最近的 trace，可按状态过滤；只有管理员自己的 trace 带输入预览，他人的不返回内容。"""
+    """List recent traces, exposing input previews only for the administrator's own traces."""
     clause, params = ("WHERE status = ?", (status,)) if status else ("", ())
     from src.observability.redaction import hash_user
 
@@ -76,7 +78,7 @@ def list_traces(
 
 @router.get("/traces/{trace_id}")
 def get_trace(trace_id: str, principal: Principal = Depends(require_admin)):
-    """管理员查看单条 trace 的步骤与评分；不属于自己的 trace 会隐去输入、输出和错误详情，不存在返回 404。"""
+    """Return trace steps and scores, redacting other users' content; return 404 if absent."""
     store = get_ops_store()
     trace = store.query_one("SELECT * FROM traces WHERE id = ?", (trace_id,))
     if not trace:
@@ -103,6 +105,8 @@ def get_trace(trace_id: str, principal: Principal = Depends(require_admin)):
 
 
 class SyntheticSampleForm(BaseModel):
+    """Administrator-curated synthetic evaluation sample."""
+
     input_text: str = Field(min_length=1, max_length=8_000)
     tenant_id: str = Field(pattern="^synthetic-[ab]$")
     split: str = Field(pattern="^(train|holdout|regression)$")
@@ -112,7 +116,7 @@ class SyntheticSampleForm(BaseModel):
 
 @router.post("/datasets/synthetic")
 def add_synthetic_sample(body: SyntheticSampleForm, _: Principal = Depends(require_admin)):
-    """管理员向评估数据集加入一条人工构造的合成样本；必须确认其为合成数据且只用固定的合成租户，含个人标识或引用真实资源则返回 400。"""
+    """Add confirmed synthetic samples using fixed tenants; reject PII or real-resource references."""
     if not body.confirmed_synthetic or len(json.dumps(body.expected)) > 10_000:
         raise HTTPException(400, "请仅提交人工构造的合成样本和有限的预期结果")
     try:
@@ -125,6 +129,8 @@ def add_synthetic_sample(body: SyntheticSampleForm, _: Principal = Depends(requi
 
 
 class SyntheticExperimentForm(BaseModel):
+    """Bounded local-model synthetic experiment options."""
+
     model_id: str | None = Field(default=None, max_length=150)
     repeats: int = Field(default=1, ge=1, le=3)
 
@@ -133,7 +139,7 @@ class SyntheticExperimentForm(BaseModel):
 async def run_synthetic_samples(
     body: SyntheticExperimentForm, _: Principal = Depends(require_admin)
 ):
-    """管理员用已登记的本机模型在隔离的合成环境中运行合成样本（不接触真实数据），重复 1 至 3 次并返回评估指标；选项无效返回 400。"""
+    """Evaluate samples in isolation with a registered local model and one to three repeats."""
     from src.evaluation.runner import run_synthetic_experiment
 
     try:
@@ -145,20 +151,20 @@ async def run_synthetic_samples(
 
 @router.get("/datasets")
 def list_dataset_items(split: str | None = None, _: Principal = Depends(require_admin)):
-    """管理员列出评估数据集条目，可按 train、holdout、regression 划分过滤。"""
+    """List evaluation entries, optionally filtered by train, holdout, or regression split."""
     splits = (split,) if split else datasets.SPLITS
     return [item.__dict__ for item in datasets.items(splits)]
 
 
 @router.get("/proposals")
 def list_proposals(status: str | None = None, _: Principal = Depends(require_admin)):
-    """管理员列出演化提案（可按状态过滤）及审核积压状态。"""
+    """List evolution proposals and review backlog, optionally filtered by status."""
     return {"proposals": Governance().list(status), "backlog": Governance().backlog_status()}
 
 
 @router.get("/proposals/{proposal_id}")
 def get_proposal(proposal_id: str, _: Principal = Depends(require_admin)):
-    """管理员查看单个提案详情；处于灰度中的提案附带实时灰度指标，不存在返回 404。"""
+    """Return proposal details and live canary metrics, or 404 if absent."""
     proposal = Governance().get(proposal_id)
     if not proposal:
         raise HTTPException(status_code=404, detail="Proposal not found")
@@ -169,6 +175,8 @@ def get_proposal(proposal_id: str, _: Principal = Depends(require_admin)):
 
 
 class ReviewBody(BaseModel):
+    """Candidate-version confirmation for proposal review."""
+
     note: str | None = Field(default=None, max_length=1_000)
     candidate_id: str | None = Field(default=None, max_length=80)
 
@@ -183,7 +191,7 @@ def _act(fn, *args, **kwargs):
 
 @router.post("/proposals/{proposal_id}/approve")
 def approve(proposal_id: str, body: ReviewBody, admin: Principal = Depends(require_admin)):
-    """管理员批准当前候选并启动灰度。候选被替换时提示重新查看。"""
+    """Approve the current candidate for canary testing; require review again if it changed."""
     return _act(
         Governance().approve,
         proposal_id,
@@ -195,25 +203,29 @@ def approve(proposal_id: str, body: ReviewBody, admin: Principal = Depends(requi
 
 @router.post("/proposals/{proposal_id}/reject")
 def reject(proposal_id: str, body: ReviewBody, admin: Principal = Depends(require_admin)):
-    """管理员驳回待审核或已过期的提案，并废弃其候选版本；状态不允许时返回 409。"""
+    """Reject pending or expired proposals and archive candidates; return 409 for invalid
+    transitions.
+    """
     return _act(Governance().reject, proposal_id, admin.email, body.note)
 
 
 @router.post("/proposals/{proposal_id}/promote")
 def promote(proposal_id: str, admin: Principal = Depends(require_admin)):
-    """管理员对灰度中的提案做第二次确认并晋升为线上版本；灰度天数、样本量或指标不达标时由服务端重新计算并拒绝（409）。"""
+    """Require a second approval for promotion and recompute canary gates server-side."""
     return _act(Governance().promote, proposal_id, admin.email)
 
 
 @router.post("/proposals/{proposal_id}/rollback")
 def rollback(proposal_id: str, body: ReviewBody, admin: Principal = Depends(require_admin)):
-    """管理员终止灰度，或把已晋升的版本回滚到前一版本；其他状态返回 409。"""
+    """Stop a canary or restore the predecessor of a promoted version; reject other states with
+    409.
+    """
     return _act(Governance().rollback, proposal_id, body.note or "manual rollback", admin.email)
 
 
 @router.post("/evolution/run")
 async def run_cycle(_: Principal = Depends(require_admin)):
-    """管理员手动触发一次自进化周期：监控灰度、挖掘失败聚类并生成和评估候选，返回周期报告；候选只进入待审核，不会直接上线。"""
+    """Run a batch evolution cycle that submits reviewed candidates without deploying them."""
     from src.memory.runtime import llm_complete
 
     report = await EvolutionCycle(completer=llm_complete).run()
@@ -221,6 +233,8 @@ async def run_cycle(_: Principal = Depends(require_admin)):
 
 
 class FeedbackBody(BaseModel):
+    """User feedback associated with an owned answer."""
+
     trace_id: str = Field(min_length=1, max_length=80)
     rating: int = Field(ge=-1, le=1)
     comment: str | None = Field(default=None, max_length=1_000)
@@ -228,7 +242,7 @@ class FeedbackBody(BaseModel):
 
 @router.post("/feedback")
 def feedback(body: FeedbackBody, principal: Principal = Depends(get_principal)):
-    """接收 Open WebUI 的点赞/点踩；任何已签名用户都只能评价自己的回答。"""
+    """Accept Open WebUI thumbs-up or thumbs-down only from the answer's signed owner."""
     from src.observability.redaction import hash_user
 
     store = get_ops_store()

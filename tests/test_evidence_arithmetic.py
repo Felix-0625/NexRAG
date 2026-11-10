@@ -1,4 +1,4 @@
-"""推导出的数字必须来自绑定当前证据的真实本地计算。"""
+"""Derived numbers require real local calculations bound to current evidence."""
 
 from decimal import Decimal
 
@@ -9,6 +9,7 @@ from src.agent.grounding import EvidenceLedger
 
 
 def operand(value, excerpt, evidence_id="KB1"):
+    """Provide operand test data or behavior for this scenario."""
     return EvidenceOperand(evidence_id=evidence_id, excerpt=excerpt, value=value)
 
 

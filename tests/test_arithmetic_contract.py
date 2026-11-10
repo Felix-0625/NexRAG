@@ -1,4 +1,4 @@
-"""文档计算必须经过三个阶段，仅检索不算完成。"""
+"""Document calculations require retrieval, calculation, and final reporting."""
 
 import asyncio
 
@@ -28,12 +28,14 @@ def test_explicit_operation_contract_keeps_negative_and_definition_requests_sepa
 
 
 def ledger():
+    """Build an evidence ledger for the scenario."""
     result = EvidenceLedger(required={"kb", "arithmetic:percent_change"})
     result.add("kb", [{"content": "current amount 17 million; previous amount 10 million."}])
     return result
 
 
 def calculate_into(result, operation):
+    """Provide calculate into test data or behavior for this scenario."""
     result.add(
         "tool",
         calculate(
@@ -92,6 +94,7 @@ def test_actual_agent_cannot_skip_compute_or_use_difference_as_growth():
     step = 0
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal step
         step += 1
         if step == 1:
@@ -134,6 +137,7 @@ def test_actual_agent_cannot_skip_compute_or_use_difference_as_growth():
     ]
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 "仅检索知识库，增长率是多少？不查询业务数据库。",

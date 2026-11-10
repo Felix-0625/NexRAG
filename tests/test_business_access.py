@@ -1,4 +1,4 @@
-"""如实的策略拒绝，不能被当成编造数据后的任务完成。"""
+"""Truthful denials must not count as completion after fabricated data."""
 
 from src.agent.business_access import check_requested_scope
 from src.agent.dependencies import AgentDeps, UserContext
@@ -7,6 +7,7 @@ from src.agent.run_options import EvaluationRun
 
 
 def deps(prompt):
+    """Provide deps test data or behavior for this scenario."""
     result = AgentDeps(context=UserContext(user_id="b", email="b@local", tenant_id="company-b"))
     result.evaluation = EvaluationRun(guidance="", params={}, authorized_tenants=("company-b",))
     result.ledger = EvidenceLedger(required={"db", "db_details"}, prompt=prompt)

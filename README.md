@@ -21,12 +21,12 @@ Release 源码包包含启动器和 NexRAG 的前端补丁。首次运行时，�
 - **单 Agent**：选择实际对话模型，运行同一个工具循环；数据库与知识权限不会因切换模型扩大。
 - **业务库只读**：服务端验证账号和业务范围，将授权行复制到独立分析快照。Agent 的 SQL 只在快照上执行，源连接强制只读。
 - **独立知识权限**：个人库按所有权隔离，管理员身份不自动获得员工私人文件访问权；企业知识按明确授权下发。
-- **单库父子块**：仅 Child 计算 Dense 和 BM42 Sparse 向量，Parent 正文与 `parent_id` 存进 Child 的 Qdrant JSON Payload，不额外建立 Parent 数据库。
-- **检索链路**：Qdrant 原生 Dense + Sparse RRF 粗召回 → 本地 BGE cross-encoder 对 Child 打分、剔除低分并保留 Top-3 → 展开 Parent、按来源去重。旧索引的 `parent_content` 仍可读取，新摄入使用 `parent_text`。
+- **单库父子块**：新安装的 Child 使用 BGE-M3 稠密和稀疏向量。Parent 正文与 `parent_id` 随 Child 存入 Qdrant。
+- **检索链路**：默认将稠密、稀疏、文件名和文档结构四路候选经加权 RRF 融合，再由本地 BGE 重排并展开 Parent。正文词项和实体图可按需启用。
 - **轻量治理**：运营 SQLite 存储权限和运行元数据，与业务源库分离。评测、候选提示词/参数、人工批准和灰度回滚均有独立生命周期。私人内容不自动进入全局学习。
 - **产物目录**：管理员绑定一个本机目录，产物按账号与对话分目录落盘；下载仍校验当前账号。
 
-BM42 是指定方案，复用 Qdrant/FastEmbed 实现。Qdrant 当前将其标为实验性方法，不能据此宣称优于 BM25 或保证中文召回质量。BGE 阈值也不是校准后的正确率；应使用目标语料的独立评测集验证，详见 [RAG 与原生交付验收](docs/acceptance/rag-native.md)。
+已有 BM42 数据库继续使用原配置。切换 BGE-M3 需要在独立集合重建稀疏向量。检索分数和分组质量以实测为准。 [实测报告](docs/acceptance/rag-quality-20261109.md)
 
 ## 评测与 RSI
 
@@ -41,7 +41,7 @@ BM42 是指定方案，复用 Qdrant/FastEmbed 实现。Qdrant 当前将其标�
 | 数据与权限 | [数据可信边界](docs/data-trust-boundaries.md)、[业务数据库接入](docs/connect-business-database.md)、[注册业务指标](docs/business-metrics.md)、[业务查询](docs/business-query.md) |
 | 使用与配置 | [本地运行](docs/local-run.md)、[模型配置](docs/model-configuration.md)、[工作空间](docs/workspace-ui.md)、[知识库版本](docs/knowledge-versions.md) |
 | 验收与发布 | [逐项验收清单](docs/acceptance/full-functional-acceptance.md)、[前端业务验收](docs/frontend-acceptance.md)、[发布门禁](docs/release-gates.md) |
-| 项目约定 | [安全说明](SECURITY.md)、[参与维护](CONTRIBUTING.md)、[来源与许可](NOTICE.md) |
+| 项目约定 | [安全说明](SECURITY.md)、[参与维护](CONTRIBUTING.md)、[来源与许可](NOTICE.md)、[第三方许可](docs/third-party-licenses.md)、[API 路由审计](docs/api-routes.md) |
 | 测试与示例 | [测试导航](tests/README.md)、[评测材料](evals/README.md)、[演示配置](examples/README.md) |
 
 常用检查：

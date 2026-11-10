@@ -1,4 +1,4 @@
-"""用模拟 HTTP 验证 MCP 审批、出站拒绝以及真实 SDK 协议。"""
+"""Mock HTTP tests for MCP approval, outbound denial, and real SDK protocols."""
 
 from __future__ import annotations
 
@@ -31,16 +31,19 @@ SPEC = {
 
 
 def run(awaitable):
+    """Run this scenario in an isolated asynchronous context."""
     return asyncio.run(awaitable)
 
 
 def allow(monkeypatch, tool_id):
+    """Provide allow test data or behavior for this scenario."""
     policy = DataAccessPolicy("public", external_tools=True, allowed_tool_ids=(tool_id,))
     monkeypatch.setattr(registry, "refresh_policy", AsyncMock(return_value=policy))
     return policy
 
 
 def approved(monkeypatch):
+    """Provide approved test data or behavior for this scenario."""
     monkeypatch.setattr(transport, "probe", AsyncMock(return_value=[SPEC]))
     server = registry.save_server(ADMIN, name="Synthetic MCP", url="http://127.0.0.1:9876/mcp")
     discovered = run(registry.discover_server(ADMIN, server["id"]))
@@ -57,6 +60,7 @@ def approved(monkeypatch):
 
 
 def invoke(item, context=None, arguments=None):
+    """Provide invoke test data or behavior for this scenario."""
     return registry.invoke_tool(
         context or UserContext(user_id="employee", email="employee@local", tenant_id=""),
         item["tool_id"],
@@ -194,6 +198,7 @@ def test_revocation_after_connection_before_call_is_rechecked(monkeypatch):
     sent = []
 
     async def connecting(*args, before_call, **kwargs):
+        """Provide connecting test data or behavior for this scenario."""
         identifier = item["tool_id"].split(":")[1]
         registry.revoke_tool(ADMIN, identifier, item["name"])
         await before_call()
@@ -225,6 +230,7 @@ def test_sdk_missing_reports_unavailable(monkeypatch):
     from importlib.metadata import PackageNotFoundError
 
     def missing(_):
+        """Provide missing test data or behavior for this scenario."""
         raise PackageNotFoundError("mcp")
 
     monkeypatch.setattr(transport, "version", missing)
@@ -243,6 +249,7 @@ def test_sdk_missing_reports_unavailable(monkeypatch):
 )
 def test_dns_rebinding_into_nonapproved_network_is_rejected(monkeypatch, host, address):
     async def check():
+        """Provide check test data or behavior for this scenario."""
         resolver = AsyncMock(return_value=[(2, 1, 6, "", (address, 443))])
         monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", resolver)
         with pytest.raises(registry.MCPError):
@@ -257,17 +264,20 @@ def test_dns_target_is_pinned_with_original_host_and_tls_name(monkeypatch):
     captured = []
 
     async def pin(_):
+        """Provide pin test data or behavior for this scenario."""
         return "8.8.8.8"
 
     monkeypatch.setattr(transport, "_target_ip", pin)
 
     def reply(request):
+        """Provide reply test data or behavior for this scenario."""
         captured.append(
             (str(request.url), request.headers["host"], request.extensions["sni_hostname"])
         )
         return httpx2.Response(200, json={"synthetic": True})
 
     async def check():
+        """Provide check test data or behavior for this scenario."""
         wire = transport.guarded_transport(
             httpx2.MockTransport(reply), endpoint="https://public.example/mcp"
         )
@@ -296,14 +306,18 @@ def test_transport_blocks_redirect_oversize_and_compressed_responses(status, hea
     requests = []
 
     class RawBody(httpx2.AsyncByteStream):
+        """Provide RawBody test data or behavior for this scenario."""
+
         async def __aiter__(self):
             yield body
 
     def reply(request):
+        """Provide reply test data or behavior for this scenario."""
         requests.append(str(request.url))
         return httpx2.Response(status, headers=headers, stream=RawBody())
 
     async def check():
+        """Provide check test data or behavior for this scenario."""
         guarded = transport.guarded_transport(httpx2.MockTransport(reply))
         async with httpx2.AsyncClient(transport=guarded) as client:
             with pytest.raises(registry.MCPError):
@@ -322,7 +336,7 @@ def test_real_official_sdk_streamable_http_protocol_without_external_network(mon
 
     @server.tool()
     def public_sum(left: int, right: int) -> dict:
-        """把两个虚构的公开数字相加，不涉及文件、SQL 或网络。"""
+        """Add two fictional public integers without files, SQL, or network access."""
         actual_calls.append((left, right))
         return {"total": left + right}
 
@@ -331,12 +345,14 @@ def test_real_official_sdk_streamable_http_protocol_without_external_network(mon
     connections = []
 
     def in_process_http(**kwargs):
+        """Provide in process http test data or behavior for this scenario."""
         connections.append(True)
         return guard(httpx2.ASGITransport(app=app), **kwargs)
 
     monkeypatch.setattr(transport, "guarded_transport", in_process_http)
 
     async def scenario():
+        """Provide scenario test data or behavior for this scenario."""
         async with app.router.lifespan_context(app):
             saved = registry.save_server(
                 ADMIN, name="Synthetic SDK server", url="http://127.0.0.1:9876/mcp"

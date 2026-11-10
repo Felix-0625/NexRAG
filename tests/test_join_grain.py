@@ -1,4 +1,4 @@
-"""基于真实只读租户快照的典型扇出（fanout）示例。"""
+"""Canonical fanout examples over real read-only tenant snapshots."""
 
 import sqlite3
 
@@ -11,6 +11,7 @@ from src.midplatform.query_semantics import QuerySemanticsError, inspect_query
 
 @pytest.fixture
 def adapter(tmp_path):
+    """Provide adapter test data or behavior for this scenario."""
     path = tmp_path / "source.db"
     with sqlite3.connect(path) as owner:
         owner.executescript(
@@ -90,8 +91,8 @@ def test_lookup_projection_cannot_be_summed_or_counted_as_orders(adapter):
         query_semantics=inspect_query(sql, adapter.profile.views).as_dict(),
     )
     counts, sums = ledger._stats()
-    assert not counts  # 三条明细行不能证明有三个订单。
-    assert sums == {300}  # 重复的查找金额合计为 400：永远不被接受。
+    assert not counts  # Three detail rows cannot prove three orders.
+    assert sums == {300}  # Repeated lookup amounts total 400, which must never be accepted.
     assert ledger.missing() == {"db_count"}
     assert ledger.issues("总金额400元。")
 

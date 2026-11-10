@@ -1,4 +1,4 @@
-"""验证兼容 OpenAI 的 token 流式输出（Server-Sent Events）。"""
+"""OpenAI-compatible Server-Sent Events streaming."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ SELLER_A = "seller_streaming_001"
 
 @pytest.fixture
 def streaming_client(tmp_path, monkeypatch):
+    """Provide streaming client test data or behavior for this scenario."""
     policy = tmp_path / "tenant-access.yaml"
     policy.write_text(
         f"tenants:\n  {SELLER_A}: Streaming Seller\n"
@@ -31,6 +32,7 @@ def streaming_client(tmp_path, monkeypatch):
 
 
 def auth_headers(*, secret="s" * 32):
+    """Build signed authorization headers for the test user."""
     claims = {
         "sub": "stream-user-1",
         "email": "streamer@example.local",
@@ -47,9 +49,10 @@ def auth_headers(*, secret="s" * 32):
 
 
 def test_chat_completions_streaming_success(streaming_client, monkeypatch):
-    """stream=True 时，端点以 SSE 分块输出，并以 [DONE] 结束。"""
+    """Streaming emits SSE chunks and ends with [DONE]."""
 
     async def mock_run_stream(prompt, context, history=None):
+        """Provide mock run stream test data or behavior for this scenario."""
         yield "Hello "
         yield "world, "
         yield "this is streamed!"
@@ -69,7 +72,6 @@ def test_chat_completions_streaming_success(streaming_client, monkeypatch):
     lines = [line.strip() for line in response.text.split("\n") if line.strip()]
     assert lines[-1] == "data: [DONE]"
 
-    # 解析并拼接 delta 内容
     collected_tokens = []
     for line in lines[:-1]:
         assert line.startswith("data: ")
@@ -84,7 +86,7 @@ def test_chat_completions_streaming_success(streaming_client, monkeypatch):
 
 
 def test_chat_completions_streaming_forbidden_tenant(streaming_client):
-    """流式模式下访问未授权的租户会返回 403。"""
+    """Streaming requests for unauthorized tenants return 403."""
     headers = auth_headers()
     headers["X-NexRAG-Tenant-Id"] = "unauthorized_seller"
 

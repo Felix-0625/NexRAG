@@ -39,12 +39,25 @@ def get_model() -> SparseTextEmbedding | None:
     if _model is None:
         from fastembed import SparseTextEmbedding
 
-        log.info("Loading fastembed sparse model: %s", settings.sparse_query_model)
-        _model = SparseTextEmbedding(
-            model_name=settings.sparse_query_model,
-            cache_dir=settings.fastembed_cache_dir or None,
+        log.info(
+            "Loading %s sparse model: %s",
+            settings.sparse_query_provider,
+            settings.sparse_query_model,
         )
-        log.info("Loaded fastembed sparse model: %s", settings.sparse_query_model)
+        if settings.sparse_query_provider.lower() == "bge-m3":
+            if settings.sparse_query_model.lower() != "baai/bge-m3":
+                raise ValueError(
+                    "The bge-m3 sparse provider requires SPARSE_QUERY_MODEL=BAAI/bge-m3"
+                )
+            from src.rag.bge_m3_sparse import BgeM3SparseEncoder
+
+            _model = BgeM3SparseEncoder(settings.bge_m3_model_path)
+        else:
+            _model = SparseTextEmbedding(
+                model_name=settings.sparse_query_model,
+                cache_dir=settings.fastembed_cache_dir or None,
+            )
+        log.info("Loaded sparse model: %s", settings.sparse_query_model)
     return _model
 
 

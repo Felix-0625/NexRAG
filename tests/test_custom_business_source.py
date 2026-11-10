@@ -1,4 +1,4 @@
-"""验证克隆后的 NexRAG 能查询另一套按租户划分的业务库结构。"""
+"""Verify custom tenant-scoped business schemas and HTTP permissions."""
 
 import sqlite3
 import time
@@ -16,6 +16,61 @@ from src.midplatform.safety import UnsafeQueryError
 
 
 def test_custom_database_profile_and_http_permission(tmp_path, monkeypatch):
+    """Keep custom schema access isolated to the authorized tenant."""
+    profile = _configure_business_source(tmp_path, monkeypatch)
+
+    schema = business_schema(settings.METADATA_PATH)
+    assert "invoice_summary" in schema
+    assert "seller_items" not in schema
+
+    adapter = SQLiteAdapter(profile_path=profile)
+    assert adapter.execute_query(
+        "SELECT SUM(amount) AS total FROM invoice_summary", "company-a"
+    ) == [{"total": 1250}]
+    try:
+        adapter.execute_query("SELECT * FROM invoices", "company-a")
+    except UnsafeQueryError:
+        pass
+    else:
+        raise AssertionError("A source table escaped the configured business view")
+
+    now = int(time.time())
+    identity = jwt.encode(
+        {
+            "sub": "viewer-1",
+            "email": "viewer@example.local",
+            "role": "user",
+            "iss": "open-webui",
+            "iat": now,
+            "exp": now + 300,
+        },
+        settings.NEXRAG_USER_JWT_SECRET,
+        algorithm="HS256",
+    )
+    headers = {
+        "Authorization": "Bearer test-service-key-with-32-characters",
+        "X-OpenWebUI-User-Jwt": identity,
+    }
+    client = TestClient(app)
+    assert client.get("/v1/tenants", headers=headers).json()["data"] == [
+        {"tenant_id": "company-a", "label": "Company A"}
+    ]
+    own = client.post(
+        "/v1/business/query",
+        headers=headers,
+        json={"tenant_id": "company-a", "sql": "SELECT SUM(amount) AS total FROM invoice_summary"},
+    )
+    other = client.post(
+        "/v1/business/query",
+        headers=headers,
+        json={"tenant_id": "company-b", "sql": "SELECT SUM(amount) AS total FROM invoice_summary"},
+    )
+    assert own.status_code == 200
+    assert own.json()["rows"] == [{"total": 1250}]
+    assert other.status_code == 403
+
+
+def _configure_business_source(tmp_path, monkeypatch):
     database = tmp_path / "company.db"
     with closing(sqlite3.connect(database)) as connection:
         connection.executescript(
@@ -84,52 +139,4 @@ def test_custom_database_profile_and_http_permission(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "NEXRAG_SHARED_API_KEY", "test-service-key-with-32-characters")
     monkeypatch.setattr(settings, "NEXRAG_USER_JWT_SECRET", "b" * 32)
 
-    schema = business_schema(settings.METADATA_PATH)
-    assert "invoice_summary" in schema
-    assert "seller_items" not in schema
-
-    adapter = SQLiteAdapter(profile_path=profile)
-    assert adapter.execute_query(
-        "SELECT SUM(amount) AS total FROM invoice_summary", "company-a"
-    ) == [{"total": 1250}]
-    try:
-        adapter.execute_query("SELECT * FROM invoices", "company-a")
-    except UnsafeQueryError:
-        pass
-    else:
-        raise AssertionError("A source table escaped the configured business view")
-
-    now = int(time.time())
-    identity = jwt.encode(
-        {
-            "sub": "viewer-1",
-            "email": "viewer@example.local",
-            "role": "user",
-            "iss": "open-webui",
-            "iat": now,
-            "exp": now + 300,
-        },
-        settings.NEXRAG_USER_JWT_SECRET,
-        algorithm="HS256",
-    )
-    headers = {
-        "Authorization": "Bearer test-service-key-with-32-characters",
-        "X-OpenWebUI-User-Jwt": identity,
-    }
-    client = TestClient(app)
-    assert client.get("/v1/tenants", headers=headers).json()["data"] == [
-        {"tenant_id": "company-a", "label": "Company A"}
-    ]
-    own = client.post(
-        "/v1/business/query",
-        headers=headers,
-        json={"tenant_id": "company-a", "sql": "SELECT SUM(amount) AS total FROM invoice_summary"},
-    )
-    other = client.post(
-        "/v1/business/query",
-        headers=headers,
-        json={"tenant_id": "company-b", "sql": "SELECT SUM(amount) AS total FROM invoice_summary"},
-    )
-    assert own.status_code == 200
-    assert own.json()["rows"] == [{"total": 1250}]
-    assert other.status_code == 403
+    return profile

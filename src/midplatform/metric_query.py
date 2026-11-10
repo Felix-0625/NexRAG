@@ -1,7 +1,7 @@
-"""用 SQLGlot 和现有只读快照执行运维方定义的指标。
+"""Execute operator-defined metrics through SQLGlot and read-only snapshots.
 
-这是有界的目录查询，不是新的 SQL 优化器。聚合表达式归属于某一个已声明的视图；
-跨视图请求在同一快照内分别执行。定义沿用语义层的实体/度量分离方式。
+This bounded catalog compiler is not a general optimizer. Aggregates belong to one declared
+view; cross-view requests run separately within the same snapshot.
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ from src.midplatform.join_grain import free_column_nodes
 
 
 class MetricDefinition(BaseModel):
+    """Operator-defined metric expression tied to a declared business view."""
+
     model_config = ConfigDict(extra="forbid")
     table: str
     calculation: str
@@ -28,6 +30,8 @@ class MetricDefinition(BaseModel):
 
 
 class MetricFilter(BaseModel):
+    """Validated field predicate applied to registered metric queries."""
+
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     field: str
     op: Literal["eq", "ne", "gt", "gte", "lt", "lte"] = "eq"
@@ -35,6 +39,8 @@ class MetricFilter(BaseModel):
 
 
 class MetricValue(BaseModel):
+    """Typed metric result with query and snapshot provenance."""
+
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     metric_id: str
     label: str
@@ -71,7 +77,7 @@ def _expression(spec, views):
 
 
 def metric_queries(definitions, names, views, filters=()):
-    """编译一小批已注册指标；先拒绝未知的 ID/过滤条件。"""
+    """Compile a small metric group, rejecting unknown IDs and filters first."""
     if not names or len(names) > 10 or len(filters) > 20:
         raise ValueError("每批需要1–10个指标，最多20个过滤条件")
     groups = defaultdict(list)
@@ -110,7 +116,7 @@ def metric_queries(definitions, names, views, filters=()):
 
 
 def execute_metric_group(session, tenant_id, measures, sql, *, adapter=None, filters=()):
-    """SQL 工具实际使用的快照仍是指标值的唯一来源。"""
+    """Keep the SQL tool's actual snapshot as the sole source of metric values."""
     result = session.read(sql, tenant_id, adapter=adapter, max_rows=1)
     if len(result["rows"]) != 1:
         raise ValueError("指标查询必须返回一个聚合结果，不能用明细行数替代")

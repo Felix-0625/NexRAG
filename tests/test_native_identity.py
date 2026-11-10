@@ -1,6 +1,5 @@
-"""一次性的原生会话测试，直接执行已发布的身份/认证函数。
-
-不会改动任何真实的 WebUI 账号、密码或服务配置。
+"""Disposable sessions exercise shipped identity functions without changing real accounts or
+configuration.
 """
 
 import ast
@@ -23,6 +22,7 @@ BACKEND = Path("webui/backend/open_webui")
 
 
 def shipped_functions(path, names, namespace):
+    """Provide shipped functions test data or behavior for this scenario."""
     tree = ast.parse(path.read_text("utf8"))
     functions = [
         node
@@ -46,6 +46,7 @@ def shipped_functions(path, names, namespace):
 
 @pytest.fixture
 def identity(tmp_path, monkeypatch):
+    """Provide identity test data or behavior for this scenario."""
     monkeypatch.setenv("NEXRAG_WORKSPACE", "true")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     spec = importlib.util.spec_from_file_location(
@@ -61,6 +62,7 @@ def identity(tmp_path, monkeypatch):
 
 @pytest.fixture
 def auth(identity):
+    """Provide auth test data or behavior for this scenario."""
     namespace = {
         "asyncio": asyncio,
         "datetime": datetime,
@@ -97,6 +99,7 @@ def auth(identity):
 
 
 def request(path="/api/v1/chats/", method="GET", token=""):
+    """Provide request test data or behavior for this scenario."""
     return SimpleNamespace(
         url=SimpleNamespace(path=path),
         method=method,
@@ -133,6 +136,7 @@ def test_initial_credentials_cannot_call_business_or_api_key_routes(identity, au
     token = auth["create_token"]({"id": "employee"}, timedelta(hours=1))
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with pytest.raises(HTTPException) as error:
             await auth["get_current_user"](
                 request(), Response(), None, SimpleNamespace(credentials=token)
@@ -331,6 +335,7 @@ def test_forwarded_generation_is_original_verified_token_not_latest_store(identi
     incoming = request()
 
     async def authenticate():
+        """Provide authenticate test data or behavior for this scenario."""
         return await auth["get_current_user"](
             incoming, Response(), None, SimpleNamespace(credentials=token)
         )

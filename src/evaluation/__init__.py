@@ -1,1 +1,1 @@
-"""NexRAG 评估包。"""
+"""NexRAG evaluation package."""

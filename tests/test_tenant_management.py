@@ -1,4 +1,4 @@
-"""管理员维护的租户目录与授权：YAML 初始化、增删改查与 HTTP API。"""
+"""Administrator tenant catalogs and grants through YAML seeds and HTTP CRUD."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ SECRET = "a" * 32
 
 @pytest.fixture
 def seeded_yaml(tmp_path, monkeypatch):
+    """Provide seeded yaml test data or behavior for this scenario."""
     policy = tmp_path / "tenant-access.yaml"
     policy.write_text(
         "tenants:\n  t-a: Seller A\n  t-b: Seller B\nusers:\n  viewer@example.local:\n    - t-a\n",
@@ -30,7 +31,7 @@ def seeded_yaml(tmp_path, monkeypatch):
 
 def test_seed_from_yaml_runs_once(isolated_ops, seeded_yaml):
     assert tenant_access.seed_from_yaml() == 2
-    assert tenant_access.seed_from_yaml() == 0  # 表已非空：不做任何操作
+    assert tenant_access.seed_from_yaml() == 0  # Existing table contents make seeding a no-op.
     assert tenant_access.list_tenants() == {"t-a": "Seller A", "t-b": "Seller B"}
     assert tenant_access.list_grants() == {"viewer@example.local": ["t-a"]}
 
@@ -70,6 +71,7 @@ def test_revoking_a_tenant_also_drops_its_grants(isolated_ops):
 
 
 def headers(role="admin"):
+    """Build signed request headers for the test identity."""
     claims = {
         "sub": "u1",
         "email": "admin@example.local",
@@ -86,6 +88,7 @@ def headers(role="admin"):
 
 @pytest.fixture
 def client(monkeypatch):
+    """Provide an isolated HTTP client for the test application."""
     monkeypatch.setattr(settings, "NEXRAG_SHARED_API_KEY", KEY)
     monkeypatch.setattr(settings, "NEXRAG_USER_JWT_SECRET", SECRET)
     return TestClient(app)

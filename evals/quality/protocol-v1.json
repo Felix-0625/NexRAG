@@ -1,0 +1,69 @@
+{
+  "id": "nexrag-quality-v1-20261109",
+  "status": "definitions-frozen-run-manifest-required",
+  "k": 10,
+  "thresholds": {
+    "recall_at_10": [">", 0.90],
+    "mrr": [">", 0.90],
+    "ndcg_at_10": [">", 0.85],
+    "context_precision": [">", 0.80],
+    "context_recall": [">", 0.85],
+    "faithfulness": [">", 0.95],
+    "hallucination_rate": ["<", 0.01],
+    "answer_relevancy": [">", 0.85],
+    "answer_correctness": [">", 0.85],
+    "groundedness": [">", 0.90],
+    "citation_accuracy": ["=", 1.0],
+    "retrieval_p95_seconds": ["<", 0.5],
+    "e2e_p95_seconds": ["<", 5.0],
+    "human_judge_agreement": [">", 0.85]
+  },
+  "ranking": {
+    "unit": "Actual returned Parent chunks, with a canonical Parent catalogue frozen from the complete original corpus before queries; changing Parent segmentation requires a new non-comparable protocol epoch",
+    "recall": "CMRC: first 10 returned Parents completely contain any official alternative source span; CUAD: fraction of all distinct official source spans completely contained by first 10 Parents, macro by question; PubMedQA: provided research-context association recall only, not clinical factual coverage",
+    "mrr": "macro reciprocal first-relevant rank of actual returned K=10 list; absent relevance is 0; not an untruncated corpus leaderboard score",
+    "ndcg": "For these span datasets, binary canonical-Parent qrels derived only from complete coverage of official source spans (PubMedQA provided-context association); gain 2^grade-1, log2(rank+1), ideal from all frozen canonical positive Parents; duplicate units have zero gain and keep their rank slots; this is not a document-ID or alternative-K leaderboard score",
+    "source_spans": "for span datasets, additionally verify exact archived source intervals; document identity is not span coverage",
+    "unjudged": "grade 0 within explicitly frozen public pool; report incomplete official judgments as a limitation",
+    "unverifiable_labels": "Invalid/missing official source offsets, ambiguous source positions, or returned noncanonical units remain scorer errors; no guessed offsets or dropped hard cases"
+  },
+  "generation": {
+    "ragas_version": "0.4.3",
+    "context_precision": "LLMContextPrecisionWithReference over ordered model-visible tool contexts",
+    "context_recall": "LLMContextRecall over reference-answer atomic facts and model-visible contexts",
+    "faithfulness": "Faithfulness over generated atomic facts and model-visible contexts; empty or unparsed claim sets are unverifiable",
+    "answer_relevancy": "AnswerRelevancy with strictness 3 and frozen embedding model",
+    "answer_correctness": "AnswerCorrectness factual/semantic weights 0.75/0.25, beta 1; never replace with FactualCorrectness F1",
+    "hallucination_rate": "answer-level fraction with any unsupported, contradicted or fabricated-citation factual claim; no claim-weighted substitution",
+    "groundedness": "answer-level complete conclusion supported by current authorized applicable evidence, including conditions and exceptions",
+    "citation_accuracy": "every factual claim has a local citation to current-turn retrieved evidence, verified source version/location, and entailment verdict; claims coverage and citation correctness both required",
+    "refusals": "separate answerable/unanswerable groups; answerable refusals remain in planned denominators and count as incorrect; never count vacuous faithfulness as 1",
+    "minimum_answerable_completion_rate": 0.95
+  },
+  "performance": {
+    "hardware": "current-user-machine-fingerprint-required",
+    "concurrency": [1, 5, 10],
+    "measured_requests_per_endpoint_per_concurrency": 1000,
+    "warmup_requests": 20,
+    "cold_start": "record the first full real request after service/model startup separately; a single cold observation is not a cold P95",
+    "percentile": "nearest-rank ceil(0.95*N), complete client-observed HTTP response",
+    "cache": "model/index warmup allowed and disclosed; no query-answer, embedding, pair-score or replay-cache substitution",
+    "retrieval_boundary": "client send through embedding, index queries, fusion, reranking and context selection to complete /search response",
+    "e2e_boundary": "authenticated production chat endpoint, complete generation and application validation response; no TTFT substitution",
+    "error_gate": "zero failed/incomplete planned requests required; failures/timeouts retained; successful-only P95 is separately diagnostic"
+  },
+  "independence": {
+    "split": "stable source-group hash before outcomes; development/selection/holdout source groups disjoint",
+    "consumed_holdout": "any inspected failure used for tuning consumes that holdout; replace with new untouched source groups",
+    "humans": "independent blinded human annotations only; AI imitation excluded and never labeled human",
+    "judge": "pin judge model digest, prompt hashes, temperature, parser and rubric; external human calibration distinct from this-run review"
+  },
+  "reporting": {
+    "quality_minimum_independent_cases_per_required_group": 300,
+    "groups": "language, dataset, risk and split fixed in manifest; every required group must pass",
+    "states": ["passed", "failed", "unmeasured", "insufficient_evidence", "scorer_error", "not_applicable"],
+    "required_manifest": ["source_revision", "source_tree_sha256", "corpus", "case_ids", "partitions", "groups", "hardware", "models", "scorers", "service_config", "k", "load", "protocol_sha256"],
+    "safety": "cross-tenant read, revoked-access disclosure, privacy disclosure, effective prompt injection and serious domain errors are separately blocking",
+    "publish": "all required groups and metrics must pass; no missing metric may be silently omitted"
+  }
+}

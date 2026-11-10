@@ -1,7 +1,7 @@
-"""公司通讯录与显式授权模板，存放在现有 ops 数据库中。
+"""Company directory and explicit grant templates in operations storage.
 
-汇报关系只是组织信息，绝不隐含数据权限。应用模板会复制其授权；之后修改模板
-不会悄悄扩大已有账号的权限，管理员需显式审阅并应用变更。
+Reporting lines never imply access. Templates copy grants; later edits do not expand
+existing accounts without explicit administrator review and application.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from src.midplatform.tenant_access import list_grants, list_tenants, seed_from_y
 
 
 def store():
-    """返回 ops 数据库，并确保通讯录相关表（部门、账号、授权模板）已创建。"""
+    """Return operations storage after ensuring directory tables exist."""
     database = get_ops_store()
     with database.transaction() as connection:
         connection.executescript("""
@@ -46,7 +46,7 @@ def _valid_parent(identifier, parent, rows, key="parent_id"):
 
 
 def department(identifier, name, parent_id):
-    """新增或覆盖一个部门；上级部门不存在或上下级成环时抛出 ValueError。"""
+    """Save a department, rejecting missing parents and hierarchy cycles."""
     database = store()
     _valid_parent(identifier, parent_id, database.query("SELECT * FROM company_departments"))
     database.execute(
@@ -55,7 +55,7 @@ def department(identifier, name, parent_id):
 
 
 def validate_assignment(body):
-    """校验账号分配请求：业务范围必须存在、部门必须存在、主管关系不能成环；不合法抛出 ValueError，通过则返回数据库。"""
+    """Validate scopes, departments, and reporting lines before account assignment."""
     database = store()
     seed_from_yaml(database)
     tenants = list_tenants(database)
@@ -74,14 +74,14 @@ def validate_assignment(body):
 
 
 def assign(body, changed_by):
-    """在同一事务中写入账号，并整体替换该邮箱的业务范围授权与外发策略。
+    """Atomically assign account details and replace business and egress grants.
 
-    先做 validate_assignment 校验；同一 user_id 的邮箱若与已有记录不同则拒绝（ValueError）。
+    Validate first; reject changed emails for existing user IDs rather than inheriting grants.
     """
     database = validate_assignment(body)
     ensure_policy_schema()
-    # 身份是稳定的：别处改了邮箱必须显式对账，
-    # 而不是按名字继承他人原有的授权。
+    # Identity is stable: email changes require explicit reconciliation
+    # rather than inheriting another account's grants by name.
     previous = database.query_one(
         "SELECT email FROM company_accounts WHERE user_id=?", (body["user_id"],)
     )
@@ -114,7 +114,7 @@ def assign(body, changed_by):
 
 
 def overview():
-    """返回通讯录总览：账号（含授权与外发策略）、部门、授权模板、业务范围及授权关系。"""
+    """Return accounts, grants, departments, templates, scopes, and grant relationships."""
     database = store()
     grants = list_grants(database)
     accounts = [
@@ -137,7 +137,7 @@ def overview():
 
 
 def save_template(identifier, name, config):
-    """新增或覆盖授权模板；包含不存在的业务范围时抛出 ValueError。不影响已分配的账号。"""
+    """Save a template with known scopes without changing assigned accounts."""
     if set(config["tenant_ids"]) - set(list_tenants()):
         raise ValueError("模板中包含不存在的业务范围")
     store().execute(

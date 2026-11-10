@@ -1,7 +1,8 @@
-"""NexRAG Agent 使用的受治理业务、知识库、联网搜索与沙箱文件工具。
+"""Governed business, knowledge, web-search, and sandbox-file tools.
 
-业务读取经由租户快照适配器；文档检索委托给 AarhusAI 检索服务，其 Qdrant 索引、融合与重排序是唯一的事实来源，NexRAG 不重复实现该检索流水线。
-联网搜索委托给 SearXNG 或公共搜索 API，并带有回退；沙箱文件检查在内存中分析临时表格与文本，不污染基础 Qdrant 知识库。
+Business reads use tenant snapshots. AarhusAI retrieval owns Qdrant indexing, fusion, and
+reranking; NexRAG does not duplicate it. Web search delegates to SearXNG or public APIs with
+fallbacks. Temporary file analysis stays in memory and never pollutes persistent knowledge.
 """
 
 from __future__ import annotations
@@ -15,14 +16,14 @@ import httpx
 import sqlglot
 from sqlglot import exp
 
-from src.config import settings
+from src.config import DEFAULT_KNOWLEDGE_TOP_K, MAX_KNOWLEDGE_TOP_K, settings
 from src.midplatform.adapters import load_source_profile
 from src.midplatform.catalog import MetadataCatalog
 from src.midplatform.sandbox_file import FileSandboxSecurityError, inspect_file_content
 
 
 def register_plan(sub_tasks: list[str]) -> tuple[list[str], dict[str, Any]]:
-    """校验并清洗多步分析规划的子任务。"""
+    """Validate and clean multi-step analysis subtasks."""
     clean_steps = [str(s).strip() for s in sub_tasks if str(s).strip()]
     if not clean_steps:
         return [], {"error": "Sub-tasks list cannot be empty."}
@@ -41,7 +42,7 @@ def business_schema(
     table_name: str | None = None,
     max_tables: int = 2,
 ) -> str:
-    """描述已配置的业务视图和有文档记录的指标公式，并做动态裁剪。"""
+    """Describe configured business views and documented metric formulas with dynamic pruning."""
     from src.midplatform.workspace import active_connection
 
     active = active_connection()
@@ -100,7 +101,7 @@ def business_schema(
 
 
 def query_business(sql: str, tenant_id: str, db_path: str | Path | None) -> dict[str, Any]:
-    """在私有的租户快照中执行 SQL，并返回有上限的结果。"""
+    """Execute bounded SQL in a private tenant snapshot."""
     if not tenant_id:
         raise ValueError("当前账号未被授予业务数据库访问权限")
     from src.agent.business_session import BusinessReadSession, current_business_session
@@ -117,7 +118,7 @@ def query_business(sql: str, tenant_id: str, db_path: str | Path | None) -> dict
 def _query_business_in_session(session, sql, tenant_id, db_path):
     result = session.read(sql, tenant_id, db_path)
     rows = result["rows"]
-    # 用同一个已授权快照诊断过于严格的过滤条件；原结果保持不变，绝不悄悄放宽所请求的查询。
+    # Diagnose strict filters on the same authorized snapshot without altering or relaxing the original query.
     empty_aggregate = bool(rows) and all(
         value is None or value == 0 for row in rows for value in row.values()
     )
@@ -152,20 +153,20 @@ async def search_knowledge(
     api_key: str,
     collection_name: str | list[str],
     client: httpx.AsyncClient | None = None,
-    top_k: int = 3,
+    top_k: int = DEFAULT_KNOWLEDGE_TOP_K,
 ) -> list[dict[str, Any]]:
-    """调用基础检索服务，并将其并行的结果列表规范化。"""
+    """Call retrieval and normalize its parallel result lists."""
     if not query.strip():
         raise ValueError("Knowledge search query cannot be empty")
     if not api_key:
         raise RuntimeError("Knowledge retrieval API key is not configured")
-    if not 1 <= top_k <= 10:
-        raise ValueError("Knowledge result count must be between 1 and 10")
+    if not 1 <= top_k <= MAX_KNOWLEDGE_TOP_K:
+        raise ValueError(f"Knowledge result count must be between 1 and {MAX_KNOWLEDGE_TOP_K}")
 
     collections = [collection_name] if isinstance(collection_name, str) else list(collection_name)
     if not collections:
         return []
-    # 检索服务限制每次调用最多 20 个集合。
+    # The retrieval service permits at most 20 collections per call.
     if len(collections) > 20:
         results = []
         for start in range(0, len(collections), 20):
@@ -219,7 +220,7 @@ async def search_web(
     timeout: float = 8.0,
     client: httpx.AsyncClient | None = None,
 ) -> list[dict[str, Any]]:
-    """通过 SearXNG JSON API 搜索外部网页信息，失败时平稳回退。"""
+    """Search SearXNG JSON with graceful fallback on failure."""
     if not query.strip():
         raise ValueError("Web search query cannot be empty")
 
@@ -270,10 +271,10 @@ def inspect_temporary_file(
     max_lines: int = 50,
     user_id: str | None = None,
 ) -> dict[str, Any]:
-    """检查并抽样一个安全的上传文件（CSV、TSV、JSON、TXT、MD、Log）。
+    """Inspect and sample safe uploaded CSV, TSV, JSON, text, Markdown, or log files.
 
-    访问被限制在 ``settings.SANDBOX_ROOT_DIR`` 内。该目录专用，与应用源码和配置文件分离，而不是进程工作目录；
-    这样临时文件可在安全沙箱内分析，不会污染永久的 Qdrant 知识库。
+    Access stays inside the dedicated SANDBOX_ROOT_DIR, separate from source, configuration,
+    and the working directory. Temporary analysis never modifies permanent Qdrant knowledge.
     """
     try:
         base_dir = Path(settings.SANDBOX_ROOT_DIR).resolve()

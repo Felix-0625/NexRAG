@@ -88,6 +88,11 @@ async def lifespan(app: FastAPI):
                 raise
             log.exception("Local cross-encoder warmup failed; searches will use reranker fallback")
 
+    if settings.enable_graph_rag:
+        from app.services.entity_graph import warm_up
+
+        await asyncio.to_thread(warm_up)
+
     yield
 
     await http_client.close_client()

@@ -1,7 +1,7 @@
-"""把公开发布的 Olist CSV 文件导入本地 SQLite 业务数据库。
+"""Import public Olist CSVs into a local SQLite business database.
 
-保留原始列。金额字段额外增加整数分（cent）列，使卖家指标避免浮点舍入误差。
-导入先在临时数据库中完成，校验通过后才替换目标文件。
+Preserve original columns and add integer-cent amounts to avoid floating-point errors.
+Build and validate a temporary database before replacing the destination.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT / "data" / "source" / "olist"
 DEFAULT_DATABASE = ROOT / "data" / "sqlite" / "business.db"
 
-# 每一项把一个公开 CSV 映射到列名相同的表。
-# 保留 Olist 原始拼写，便于追溯数据来源和做数据审计。
+# Map each public CSV to a table with its original columns.
+# Retain original Olist spelling for provenance and auditing.
 TABLES = {
     "customers": (
         "olist_customers_dataset.csv",
@@ -99,7 +99,7 @@ INDEXES = (
 
 
 def cents(value: str, *, filename: str, row_number: int, column: str) -> int:
-    """把公开的 BRL 金额精确转换为分，并拒绝格式错误的行。"""
+    """Convert public BRL amounts exactly to cents, rejecting malformed rows."""
     try:
         amount = Decimal(value)
     except InvalidOperation as exc:
@@ -117,7 +117,7 @@ def import_table(
     ddl: str,
     money_columns: tuple[str, ...],
 ) -> tuple[int, str]:
-    """加载一个源文件，返回导入的行数和 SHA-256。"""
+    """Load one source file and return its row count and SHA-256."""
     if not source.is_file():
         raise FileNotFoundError(source)
     connection.execute(f"CREATE TABLE {table} ({ddl})")
@@ -169,7 +169,7 @@ def import_table(
 
 
 def import_dataset(source_dir: Path, database_path: Path) -> dict[str, object]:
-    """先构建并校验 SQLite 数据库，再替换目标文件。"""
+    """Build and validate SQLite before replacing the destination."""
     database_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         prefix="nexrag-olist-", suffix=".db", dir=database_path.parent, delete=False
@@ -190,7 +190,7 @@ def import_dataset(source_dir: Path, database_path: Path) -> dict[str, object]:
                 connection.execute(statement)
             connection.commit()
 
-            # 卖家身份存在于订单项粒度，这是权限锚点。
+            # Seller identity lives at order-item grain and anchors authorization.
             missing_sellers = connection.execute(
                 "SELECT COUNT(*) FROM order_items i LEFT JOIN sellers s "
                 "ON s.seller_id = i.seller_id WHERE s.seller_id IS NULL"
@@ -222,7 +222,7 @@ def import_dataset(source_dir: Path, database_path: Path) -> dict[str, object]:
 
 
 def main() -> None:
-    """解析 --source-dir 与 --database 参数，导入 Olist 数据集并以 JSON 打印导入摘要。"""
+    """Parse source and database options, import Olist, and print the JSON summary."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE)

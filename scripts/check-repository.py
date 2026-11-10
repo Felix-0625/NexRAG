@@ -1,4 +1,4 @@
-"""核对交付文件、代码体量、项目文档链接和发布版本的一致性。"""
+"""Check delivery files, code size, documentation links, and release-version consistency."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ CODE_SUFFIXES = {".py", ".js", ".ts", ".svelte", ".ps1", ".cjs", ".mjs", ".cmd"}
 
 
 def check_repository() -> str:
-    """拒绝运行文件、超大代码文件和失效的项目文档链接，返回项目版本。"""
+    """Reject runtime files, oversized source files, and broken project links; return the version."""
     paths = (
         subprocess.check_output(
             ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=ROOT
@@ -83,6 +83,7 @@ def check_repository() -> str:
 
 
 def main() -> None:
+    """Run the command-line entry point with parsed options."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-tag")
     parser.add_argument("--notes-out", type=Path)

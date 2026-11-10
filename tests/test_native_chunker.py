@@ -1,4 +1,4 @@
-"""验证纯 Python 的原生父子分块与载荷嵌入。"""
+"""Pure-Python parent-child chunking and embedded parent payloads."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from src.rag.native_chunker import NativeParentChildChunker
 
 
 def test_native_chunker_hierarchical_payload():
-    """验证子块在不依赖外部容器的情况下，完整嵌入父文本及其 id。"""
+    """Children embed complete parent text and IDs without external containers."""
     chunker = NativeParentChildChunker(
         parent_chunk_size=300,
         parent_overlap=30,
@@ -37,13 +37,13 @@ def test_native_chunker_hierarchical_payload():
     assert payload["source"] == "policy.md"
     assert payload["tenant_id"] == "seller_test"
 
-    # 验证子块文本包含在嵌入的父文本之内
+    # Require child text to remain inside its embedded parent context.
     assert first_chunk["text"] in payload["parent_text"]
     assert len(payload["parent_text"]) >= len(first_chunk["text"])
 
 
 def test_native_chunker_empty_input():
-    """空文本或空白文本不应产生任何分块。"""
+    """Empty or whitespace-only input produces no chunks."""
     chunker = NativeParentChildChunker(parent_chunk_size=500, child_chunk_size=100)
     assert chunker.chunk_text("", "empty.txt") == []
     assert chunker.chunk_text("   \n\n  ", "blank.txt") == []
@@ -67,7 +67,7 @@ def test_identical_documents_in_distinct_libraries_do_not_overwrite_each_other()
 
 
 def test_native_chunker_file_parsing(tmp_path):
-    """对真实的临时 markdown 文件分块能够成功。"""
+    """Chunking a real temporary Markdown file succeeds."""
     test_file = tmp_path / "guide.md"
     test_file.write_text("# Guide\nThis is a test guide for native chunking.", encoding="utf-8")
 

@@ -1,4 +1,4 @@
-"""在业务 SQL 到达隔离的 SQLite 连接之前先行校验。"""
+"""Validate business SQL before it reaches isolated SQLite."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from sqlglot import exp
 
 
 class UnsafeQueryError(ValueError):
-    """查询超出租户范围内的只读约定时抛出。"""
+    """Reject queries outside the tenant read-only contract."""
 
 
 class SQLSafetyGuard:
-    """只允许针对已配置租户视图的单条 SELECT。
+    """Allow one SELECT over configured tenant views only.
 
-    数据库适配器只把已授权的行复制到独立的内存数据库。这里的解析检查用于减少
-    失误和资源滥用，其本身不是租户边界。校验过的 SQL 也绝不能在数据源上执行。
+    Adapters copy authorized rows into isolated databases. Parsing limits mistakes and abuse
+    but is not the tenant boundary; never execute user SQL on source connections.
     """
 
     @classmethod
@@ -26,7 +26,7 @@ class SQLSafetyGuard:
         dialect: str = "sqlite",
         allow_qualified_tables: bool = False,
     ) -> str:
-        """返回一条已校验的 SELECT，使用数据源或沙箱的方言。"""
+        """Return a validated SELECT using the source or sandbox dialect."""
         if not sql.strip():
             raise UnsafeQueryError("SQL query is empty")
         if len(sql) > 20_000:
@@ -41,11 +41,11 @@ class SQLSafetyGuard:
             raise UnsafeQueryError("Only one read-only SELECT statement is allowed")
 
         statement = statements[0]
-        # WITH 子句有局部别名，但它引用的源表仍要通过下面的检查。
+        # WITH aliases are local, but their source tables must still pass validation.
         cte_names = {cte.alias.lower() for cte in statement.find_all(exp.CTE)}
         for table in statement.find_all(exp.Table):
-            # 受信任的 PostgreSQL 配置可以指定源 schema；Agent 的 SQL
-            # 始终针对沙箱内不带限定的公开视图。
+            # Trusted PostgreSQL configuration may name source schemas; agent SQL
+            # always targets unqualified public sandbox views.
             if (table.db or table.catalog) and not allow_qualified_tables:
                 raise UnsafeQueryError("Qualified database names are not allowed")
             if (

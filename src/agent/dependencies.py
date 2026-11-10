@@ -1,4 +1,4 @@
-"""经过校验的单次请求身份，以及每次运行可变的 Agent 依赖。"""
+"""Validated request identity and mutable dependencies scoped to one agent run."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from src.memory.models import MemoryScope
 
 
 class UserContext(BaseModel):
+    """Validated request identity and authorization context for one agent turn."""
+
     model_id: str | None = None
     """Server-verified user and tenant selection for one chat request."""
 
@@ -38,12 +40,13 @@ class UserContext(BaseModel):
     business_source_generation: int | None = None
 
     def memory_scope(self) -> MemoryScope:
+        """Derive memory visibility from the validated request identity."""
         return MemoryScope(user_id=self.user_id, tenant_id=self.tenant_id, chat_id=self.chat_id)
 
 
 @dataclass
 class AgentDeps:
-    """每次运行的工具依赖；租户身份不能被 LLM 更改。"""
+    """Per-run tool dependencies whose tenant identity cannot be changed by the model."""
 
     context: UserContext
     evidence_calls: int = 0

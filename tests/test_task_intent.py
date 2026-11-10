@@ -1,4 +1,4 @@
-"""明确的禁止事项，不能悄悄生成必须执行的正向任务。"""
+"""Explicit prohibitions must not silently create positive execution requirements."""
 
 import pytest
 

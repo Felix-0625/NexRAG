@@ -1,4 +1,4 @@
-"""只把已批准的 MCP schema 作为工具暴露给现有 Agent 循环。"""
+"""Expose only approved MCP schemas to the existing agent loop."""
 
 import re
 
@@ -9,7 +9,7 @@ from src.midplatform import mcp_registry
 
 
 def _invocation_clauses(prompt):
-    """保留肯定的执行请求，排除解释性语句和否定句。"""
+    """Keep affirmative execution clauses, excluding explanatory and negated requests."""
     from src.agent.task_intent import positive_request_text
 
     for clause in re.split(r"[，,。！？!?；;\n]", positive_request_text(prompt)):
@@ -27,9 +27,10 @@ def _invocation_clauses(prompt):
 
 
 def requested_tool_ids(prompt, policy):
-    """只在本账号自己的授权范围内解析显式的调用名称。
+    """Resolve explicit invocation names only within this account's authorized scope.
 
-    动作与确切名称之间可能夹有描述词和引号；不会参考先前轮次的文字，也不会查询全局注册表。
+    Allow descriptions and quotes between action and exact name, but consult neither earlier
+    turns nor the global registry.
     """
     clauses = list(_invocation_clauses(prompt))
     requested = set()
@@ -44,7 +45,7 @@ def requested_tool_ids(prompt, policy):
 
 
 def _explicit_mcp_names(prompt):
-    # 未知的 MCP 名称只来自当前用户自己的请求，绝不来自未披露的注册表条目；这也能识别已被撤销的授权。
+    # Unknown names come only from the user's request, never undisclosed registry entries; this detects revoked grants.
     names = set()
     for clause in _invocation_clauses(prompt):
         names.update(
@@ -58,9 +59,10 @@ def _explicit_mcp_names(prompt):
 
 
 def explicit_tool_refusal(prompt, policy):
-    """说明不可用的、被显式点名的授权，且不重放旧答案。
+    """Explain explicitly requested unavailable grants without replaying old answers.
 
-    只检查本账号授权内的名称，绝不披露全局注册表；调用时仍会重新检查实时授权和 schema 版本。
+    Inspect only this account's authorized names; recheck live grants and schema versions
+    at invocation without disclosing the global registry.
     """
     requested = requested_tool_ids(prompt, policy)
     explicit_names = _explicit_mcp_names(prompt)
@@ -79,7 +81,7 @@ def explicit_tool_refusal(prompt, policy):
 
 
 def approved_tools(deps):
-    """按当前策略构建最多 30 个工具；执行时仍校验审批版本，防止撤权后复用。"""
+    """Build at most 30 policy-approved tools and recheck approval versions at execution."""
     policy = current_policy(deps.context)
     if not policy.external_tools or policy.classification == "secret":
         return []
@@ -91,7 +93,10 @@ def approved_tools(deps):
     tools = []
 
     def callback(spec):
+        """Bind one approved tool specification into an invocation callback."""
+
         async def invoke(**arguments):
+            """Recheck authorization before forwarding the bound tool invocation."""
             try:
                 result = await mcp_registry.invoke_tool(
                     deps.context,

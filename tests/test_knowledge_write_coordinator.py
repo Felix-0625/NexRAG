@@ -1,4 +1,4 @@
-"""恢复操作不能在上传索引与后台文件关联之间发布。"""
+"""Restore must not publish between indexing and background file association."""
 
 import ast
 import asyncio
@@ -26,27 +26,33 @@ def test_writer_covers_background_completion_and_allows_parallel_readers(tmp_pat
     monkeypatch.setenv("NEXRAG_WORKSPACE", "true")
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         indexing, finish_link, restored = asyncio.Event(), asyncio.Event(), asyncio.Event()
         events = []
 
         async def background():
+            """Provide background test data or behavior for this scenario."""
             events.append("index-ready")
             indexing.set()
             await finish_link.wait()
             events.append("file-linked")
 
         async def upload(request):
+            """Provide upload test data or behavior for this scenario."""
             return JSONResponse({"status": True}, background=BackgroundTask(background))
 
         async def restore(request):
+            """Provide restore test data or behavior for this scenario."""
             events.append("restore-published")
             restored.set()
             return JSONResponse({"status": True})
 
         async def read(request):
+            """Provide read test data or behavior for this scenario."""
             return JSONResponse({"visible": "old-version"})
 
         async def passthrough(request, call_next):
+            """Provide passthrough test data or behavior for this scenario."""
             return await call_next(request)
 
         app = Starlette(

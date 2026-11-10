@@ -1,4 +1,4 @@
-"""用无实际行为的端点测试真实的 ASGI 守卫：不会联系任何外部 provider。"""
+"""Exercise real ASGI guards through inert endpoints without external providers."""
 
 import ast
 import asyncio
@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def guard_client(monkeypatch):
+    """Provide guard client test data or behavior for this scenario."""
     monkeypatch.setenv("NEXRAG_WORKSPACE", "true")
     monkeypatch.delenv("NEXRAG_ALLOW_TRUSTED_PLUGINS", raising=False)
     path = Path("webui/backend/open_webui/utils/nexrag_integration_guard.py")
@@ -24,6 +25,7 @@ def guard_client(monkeypatch):
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "DELETE", "PUT"])
     async def inert_endpoint(request: Request, path: str):
+        """Provide inert endpoint test data or behavior for this scenario."""
         calls.append(path)
         return {"body": await request.json() if request.method == "POST" else None}
 
@@ -179,7 +181,7 @@ def test_existing_webhooks_denied_before_logging_dns_or_network(monkeypatch):
         ),
         namespace,
     )
-    # 这里没有 logger、校验器或 HTTP 客户端：任何副作用都会导致失败。
+    # No logger, validator, or HTTP client exists here: any side effect fails.
     assert (
         asyncio.run(namespace["post_webhook"]("app", "https://invalid.test", "private body", {}))
         is False

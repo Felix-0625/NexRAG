@@ -1,4 +1,4 @@
-"""MCP 审批必须限定在单智能体的实时授权路径内。"""
+"""MCP approval stays within the single agent's live authorization path."""
 
 import asyncio
 from unittest.mock import AsyncMock
@@ -20,6 +20,7 @@ SPEC = dict(
 
 
 def context():
+    """Provide context test data or behavior for this scenario."""
     return UserContext(user_id="employee", email="employee@local", tenant_id="")
 
 

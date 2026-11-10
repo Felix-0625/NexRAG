@@ -1,9 +1,8 @@
-"""依据租户快照中强制执行的键，认证事实表到维表的连接。
+"""Certify fact-to-dimension joins with snapshot-enforced keys.
 
-这是小型系统中语义层 fanout 防护的等价实现：查询锚定在事实粒度，且只能用维表
-完整的唯一键连接。重复的维表值参与 SUM/AVG 会被拒绝，即便连接本身保留了事实行。
-不支持的基数关系必须在同一轮快照内分别查询，不能悄悄放行，也不能用
-SUM(DISTINCT amount) 掩盖。
+Require a fact root and complete unique dimension keys. Reject sums or averages over
+repeated dimensions even if fact rows survive. Unsupported cardinalities require separate
+queries in the same snapshot, never silent acceptance or SUM(DISTINCT amount).
 """
 
 from dataclasses import dataclass
@@ -13,13 +12,17 @@ from sqlglot import exp
 
 @dataclass
 class JoinProof:
+    """Certified join aliases, keys, and row-grain constraints."""
+
     root_alias: str
     root_name: str
     aliases: dict
     unique_aliases: set
 
     def identity(self, column):
-        """把列解析为 (表别名, 小写列名)；别名未知或未限定的列名在多个表中重名时抛出 ValueError。"""
+        """Resolve columns to aliases and lowercase names, rejecting unknown or ambiguous
+        identities.
+        """
         if column.table:
             alias = column.table.lower()
             if alias not in self.aliases:
@@ -43,7 +46,7 @@ def _equalities(node):
 
 
 def _fail(message):
-    """以统一的修复提示拒绝无法认证的关联。"""
+    """Reject uncertified joins with a consistent repair hint."""
     from src.midplatform.query_semantics import QuerySemanticsError
 
     raise QuerySemanticsError(
@@ -52,7 +55,7 @@ def _fail(message):
 
 
 def _root_proof(query, lookup):
-    """认证关联起点（FROM 的事实表），并建立初始证明。"""
+    """Certify the FROM fact table and initialize its proof."""
     root = query.args.get("from_")
     root = root.this if root else None
     if not isinstance(root, exp.Table) or root.name.lower() not in lookup:
@@ -66,7 +69,7 @@ def _root_proof(query, lookup):
 
 
 def _join_target(proof, lookup, join):
-    """校验单个 JOIN 的目标表与连接类型，返回别名、视图和完整唯一键。"""
+    """Validate a JOIN target, join type, and complete unique key."""
     table = join.this
     if not isinstance(table, exp.Table) or table.name.lower() not in lookup:
         _fail("关联目标缺少可认证的业务唯一键")
@@ -87,10 +90,10 @@ def _join_target(proof, lookup, join):
 
 
 def prove_join_grain(query, views):
-    """认证一个带 JOIN 的 SELECT 是否保持事实表行粒度，返回 JoinProof。
+    """Certify row-preserving joins or raise QuerySemanticsError.
 
-    起点须为已登记的事实表，其余只允许 LEFT JOIN，且 ON/USING 必须覆盖目标表完整唯一键；
-    汇总若引用会重复的关联表数值则拒绝。无法认证时抛出 QuerySemanticsError。
+    Require a registered fact root and LEFT JOINs covering target keys; reject aggregation
+    over repeated joined values.
     """
     lookup = {name.lower(): view for name, view in views.items()}
     proof = _root_proof(query, lookup)
@@ -107,10 +110,10 @@ def prove_join_grain(query, views):
 
 
 def _join_pairs(proof, join, alias, left_aliases):
-    """收集 USING/ON 等值条件，得到（右侧字段, 左侧字段）配对。"""
+    """Collect right-left equality pairs from USING or ON conditions."""
     pairs = []
-    # 注意：QuerySemanticsError 是 ValueError 的子类，内部 _fail 抛出的
-    # 错误会被下面的 except 捕获并再次追加提示，此行为需原样保留。
+    # QuerySemanticsError inherits ValueError; preserve the existing behavior where
+    # the handler catches _fail and appends its hint again.
     try:
         if join.args.get("using"):
             for column in join.args["using"]:
@@ -138,9 +141,9 @@ def _join_pairs(proof, join, alias, left_aliases):
 
 
 def _mark_unique(proof, alias, left_aliases, pairs):
-    """判断新加入的关联表在事实行中是否仍然唯一。"""
-    # 一个维表行可在多条事实中重复出现；只有等值条件同时覆盖了
-    # 此前已唯一的左侧键时，它自身才是唯一的。
+    """Check whether a newly joined table stays unique within fact rows."""
+    # Dimension rows can repeat across facts; uniqueness requires equalities
+    # covering a previously unique left-side key too.
     for left_alias in left_aliases & proof.unique_aliases:
         left_keys = {key.lower() for key in proof.aliases[left_alias].primary_key}
         if left_keys and left_keys <= {left[1] for right, left in pairs if left[0] == left_alias}:
@@ -148,13 +151,13 @@ def _mark_unique(proof, alias, left_aliases, pairs):
 
 
 def _check_aggregates(query, proof):
-    """拒绝引用了会重复的关联表数值的 SUM/AVG/COUNT 等汇总。"""
+    """Reject aggregates over numeric fields in repeated joined rows."""
     for aggregate in query.find_all(exp.Func):
         if not isinstance(aggregate, exp.AggFunc) and not (
             isinstance(aggregate, exp.Anonymous) and aggregate.name.upper() == "TOTAL"
         ):
             continue
-        # 嵌套 SELECT 内部的聚合不在本证明的认证范围内。
+        # Nested SELECT aggregates are outside this proof's certification scope.
         if aggregate.find_ancestor(exp.Select) is not query:
             continue
         if isinstance(aggregate, (exp.Min, exp.Max)):
@@ -170,7 +173,7 @@ def _check_aggregates(query, proof):
 
 
 def free_column_nodes(node):
-    """收集表达式中未被聚合函数或窗口函数包住的列节点。"""
+    """Collect columns outside aggregate and window expressions."""
     if isinstance(node, (exp.AggFunc, exp.Window)) or (
         isinstance(node, exp.Anonymous) and node.name.upper() == "TOTAL"
     ):

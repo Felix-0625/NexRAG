@@ -1,10 +1,8 @@
-"""带 train / holdout / regression 划分的评估数据集。
+"""Evaluation datasets partitioned into train, holdout, and regression splits.
 
-- train：演化循环提出改动时可以读取这些条目。
-- holdout：绝不暴露给提案生成，只供门禁使用。
-- regression：历史缺陷；条目只增不删。
-种子条目位于 ``evals/*.jsonl``（纳入 git 版本管理）并加载进运维库；
-合成样本可由管理员整理加入。
+Proposal generation may read train only; holdout is gate-only, and regression retains
+historical defects. Versioned evals/*.jsonl seeds load into operations storage, with
+administrator-curated synthetic additions.
 """
 
 from __future__ import annotations
@@ -22,6 +20,8 @@ DEFAULT_DATASET = "nexrag"
 
 @dataclass(frozen=True)
 class DatasetItem:
+    """Evaluation input, expectations, split, and synthetic provenance."""
+
     id: str
     split: str
     category: str
@@ -35,7 +35,7 @@ class DatasetItem:
 def load_seed(
     path: str | Path, store: OpsStore | None = None, dataset: str = DEFAULT_DATASET
 ) -> int:
-    """插入尚不存在的种子条目（按 split + input 匹配）。"""
+    """Insert seed entries not already present by split and input."""
     store = store or get_ops_store()
     added = 0
     for line in Path(path).read_text(encoding="utf-8").splitlines():
@@ -75,7 +75,7 @@ def load_seed(
 def items(
     splits: tuple[str, ...], store: OpsStore | None = None, dataset: str = DEFAULT_DATASET
 ) -> list[DatasetItem]:
-    """读取指定划分的数据集条目，按创建时间排序；期望结果中的租户 ID 与来源标记被拆出到条目字段。"""
+    """Read entries in creation order, separating tenant and provenance metadata from expectations."""
     store = store or get_ops_store()
     marks = ",".join("?" for _ in splits)
     rows = store.query(
@@ -109,10 +109,10 @@ def add_synthetic_item(
     category: str = "synthetic",
     store: OpsStore | None = None,
 ) -> str:
-    """显式整理一条非隐私样本；绝不从对话中复制。
+    """Curate a nonprivate synthetic sample without copying conversations.
 
-    管理员须自行保证使用的是虚构数据。PII 检测只是额外的防线，
-    并不能证明任意输入都不涉密。
+    Administrators remain responsible for fictional data; PII detection is an additional
+    defense, not proof that arbitrary input contains no secrets.
     """
     from src.evaluation.fixtures import TENANT_IDS
     from src.observability.redaction import contains_pii

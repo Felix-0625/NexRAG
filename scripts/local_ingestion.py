@@ -1,7 +1,7 @@
-"""沿用现有摄取流水线，并换成进程内的文档转换器。
+"""Reuse upstream ingestion with an in-process document converter.
 
-该入口不改动上游服务；只有原生启动才会使用此转换器。
-PDF、DOCX 和 UTF-8 文本/Markdown/CSV 无需额外的 sidecar 进程。
+Only native startup installs this converter; upstream files remain untouched. PDF, DOCX,
+and UTF-8 text formats need no sidecar process.
 """
 
 from pathlib import Path
@@ -13,9 +13,13 @@ from src.rag.document_reader import read_document
 
 @component
 class NativeConverter:
+    """Convert native local documents through the existing ingestion component contract."""
+
     @component.output_types(documents=list[Document])
     def run(self, sources: list[str | Path], meta: dict | list[dict] | None = None):
-        """逐个读取文件并转为 Document（meta 可为单个字典或按序对应的列表）；提取不到文本时抛出 ValueError，扫描件需先 OCR。"""
+        """Convert files to Documents with shared or per-file metadata; require OCR for empty
+        scans.
+        """
         documents = []
         for index, source in enumerate(sources):
             path = Path(source)
@@ -29,7 +33,7 @@ class NativeConverter:
         return {"documents": documents}
 
 
-# 上游流水线在 lifespan 中初始化，晚于这里对工厂函数的覆盖。
+# Upstream initializes pipelines during lifespan, after this factory override.
 from app.pipelines import indexing  # noqa: E402
 
 _original_converter = indexing.build_converter

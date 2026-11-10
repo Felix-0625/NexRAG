@@ -1,4 +1,4 @@
-"""编写可执行工具与使用共享工具的权限是两回事。"""
+"""Executable-tool authoring and shared-tool usage are distinct permissions."""
 
 import ast
 import asyncio
@@ -17,6 +17,7 @@ BACKEND = Path("webui/backend/open_webui")
 
 @pytest.fixture
 def native_module(monkeypatch):
+    """Provide native module test data or behavior for this scenario."""
     monkeypatch.setenv("NEXRAG_WORKSPACE", "true")
     spec = importlib.util.spec_from_file_location(
         "native_tool_identity", BACKEND / "utils/nexrag_identity.py"
@@ -63,6 +64,7 @@ def test_actual_router_dependency_guards_all_executable_mutations(
     )
 
     async def verified_user():
+        """Provide verified user test data or behavior for this scenario."""
         return SimpleNamespace(role=role)
 
     namespace = {
@@ -82,6 +84,7 @@ def test_actual_router_dependency_guards_all_executable_mutations(
 
     @namespace["router"].api_route("/create", methods=["GET", "POST", "DELETE"])
     async def inert_tool_endpoint():
+        """Provide inert tool endpoint test data or behavior for this scenario."""
         endpoint_called.append(True)
         return {"ok": True}
 
@@ -155,8 +158,8 @@ def test_native_default_does_not_install_plugin_dependencies(native_module):
         ),
         namespace,
     )
-    # 未提供包安装器或全局配置：原生策略必须在
-    # 评估或安装不受信任的依赖之前就返回。
+    # No installer or global configuration is provided: native policy must return
+    # before evaluating or installing untrusted dependencies.
     assert namespace["install_frontmatter_requirements"]("not-a-real-dependency") is None
 
 

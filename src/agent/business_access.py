@@ -1,7 +1,7 @@
-"""为指名其他业务范围的请求提供权威的拒绝证据。
+"""Provide authoritative denial evidence for requests naming another business scope.
 
-Agent 不能自行声称“无权限”来绕过 SQL 证据。本工具把用户提到的确切范围与当前授权比对，
-既不会更改已选范围，也不会读取业务行。
+The agent cannot bypass SQL evidence by claiming denial. Compare exact requested scopes
+with current grants without switching scope or reading business rows.
 """
 
 import re
@@ -11,9 +11,9 @@ from src.midplatform.tenant_access import Principal, allowed_tenants, list_tenan
 
 
 def explicit_scope_refusal(deps) -> dict | None:
-    """在为拒绝消耗一次模型调用之前，先解析显式出现的目录 ID。
+    """Resolve explicit catalog IDs before spending a model call on refusal.
 
-    不会猜测文本中的名称；未知 ID 仍受同一查询沙箱和访问检查工具约束。本检查从不授予访问权限。
+    Do not guess names or grant access; unknown IDs remain subject to sandbox and access checks.
     """
     if "db" not in deps.ledger.required:
         return None
@@ -30,9 +30,11 @@ def explicit_scope_refusal(deps) -> dict | None:
 
 
 def check_requested_scope(deps, scope_id: str) -> dict:
-    """核对用户明确提到的业务范围 ID 与当前授权和选定范围。
+    """Check an explicit scope ID against current grants and selection without reading business
+    rows.
 
-    ID 格式非法或未出现在正向请求文本中则返回 error；未授权或非选定范围时登记 business_denial 证据并返回拒绝，不读取任何业务行。
+    Return errors for invalid or unrequested IDs; record business_denial for inaccessible
+    scopes.
     """
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", scope_id):
         return {"error": "Use an exact business scope ID explicitly requested by the user"}

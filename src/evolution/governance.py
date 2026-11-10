@@ -1,19 +1,9 @@
-"""提案生命周期、积压治理、审批、金丝雀、晋升与回滚。
+"""Manage proposal review, canaries, promotion, rollback, and backlog limits.
 
-状态流转：
-    pending_review --approve（批准）--> canary --promote（晋升）--> promoted
-          |                       |--自动/手动 rollback--> rolled_back
-          |--reject（驳回）--> rejected
-          |--基线变化--> stale --重新评估--> pending_review | closed
-          |--超过 TTL--> expired
-          |--并入更新的证据--> （仍是同一提案，evidence_count 增加）
-
-积压规则：
-- 每种产物 kind 只允许一个未决提案（pending_review/stale/canary）；同一聚类的
-  新候选只刷新现有提案的证据；
-- 审核队列有上限（PROPOSAL_QUEUE_LIMIT）；超出后聚类仍会记录，
-  但不再生成新提案；
-- 没有管理员批准，任何改动都不会上线。
+Pending proposals can enter canary only after approval; promotion requires another review.
+Reject, expire, or mark stale proposals as appropriate, and merge repeated cluster evidence.
+Allow one open proposal per artifact kind, cap the review queue, and never deploy without
+administrator approval.
 """
 
 from __future__ import annotations
@@ -30,11 +20,11 @@ OPEN = ("pending_review", "stale", "canary")
 
 
 class GovernanceError(ValueError):
-    """生命周期转换不被允许时抛出。"""
+    """Raise for a forbidden proposal lifecycle transition."""
 
 
 class Governance:
-    """管理提案的审核、灰度、晋升与回滚；状态转换与版本写入在同一事务完成。"""
+    """Manage lifecycle transitions and artifact writes atomically."""
 
     def __init__(self, store: OpsStore | None = None, reg: ArtifactRegistry | None = None):
         self._store = store
@@ -42,16 +32,18 @@ class Governance:
 
     @property
     def store(self) -> OpsStore:
+        """Resolve the current operations store lazily."""
         return self._store or get_ops_store()
 
-    # ----------------------------------------------------------------- 查询
     def get(self, proposal_id: str) -> dict[str, Any] | None:
-        """按 ID 取提案（报告已解析为字典）；不存在返回 None。"""
+        """Return a proposal with its decoded report, or None."""
         row = self.store.query_one("SELECT * FROM proposals WHERE id = ?", (proposal_id,))
         return {**row, "report": json.loads(row["report"])} if row else None
 
     def list(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        """列出提案；指定状态时按优先级排序，否则按最近更新排序，最多返回 limit 条。"""
+        """List proposals by priority within a status, otherwise by recent update, bounded by
+        limit.
+        """
         if status:
             rows = self.store.query(
                 "SELECT * FROM proposals WHERE status = ? ORDER BY priority DESC, created_at DESC LIMIT ?",
@@ -64,7 +56,7 @@ class Governance:
         return [{**row, "report": json.loads(row["report"])} for row in rows]
 
     def open_for_kind(self, kind: str) -> dict[str, Any] | None:
-        """返回该产物类型最新的未决提案（待审核、基线已变动待重新评估或灰度中），没有则返回 None。"""
+        """Return the latest pending, stale, or canary proposal for this artifact kind."""
         marks = ",".join("?" for _ in OPEN)
         row = self.store.query_one(
             f"SELECT * FROM proposals WHERE kind = ? AND status IN ({marks}) ORDER BY created_at DESC LIMIT 1",
@@ -73,14 +65,14 @@ class Governance:
         return {**row, "report": json.loads(row["report"])} if row else None
 
     def queue_size(self) -> int:
-        """返回待审核提案的数量。"""
+        """Count proposals awaiting review."""
         row = self.store.query_one(
             "SELECT COUNT(*) AS n FROM proposals WHERE status = 'pending_review'"
         )
         return int(row["n"]) if row else 0
 
     def backlog_status(self) -> dict[str, Any]:
-        """汇总提案积压：各状态数量、队列上限与是否已满、最早待审核提案的天数，以及是否超过 TTL 一半的告警。"""
+        """Summarize backlog counts, limits, age, and half-TTL warnings."""
         counts = {
             row["status"]: row["n"]
             for row in self.store.query(
@@ -99,7 +91,6 @@ class Governance:
             "alert": age_days > settings.PROPOSAL_TTL_DAYS / 2,
         }
 
-    # ------------------------------------------------------------ 状态转换
     def submit(
         self,
         *,
@@ -111,7 +102,7 @@ class Governance:
         report: dict[str, Any],
         priority: float,
     ) -> tuple[str, str]:
-        """创建或合并提案，返回 (proposal_id, action)。"""
+        """Create or merge a proposal and return its ID and action."""
         with self.store.transaction(immediate=True):
             if baseline_id != self.reg.production(kind).id:
                 self.reg.set_label(candidate_id, "rejected")
@@ -123,7 +114,7 @@ class Governance:
                 and existing["cluster_key"] == cluster_key
                 and existing["status"] != "canary"
             ):
-                # 同一问题再次出现：刷新证据和候选，而不是新建提案。
+                # Repeated problems refresh existing evidence and candidates instead of multiplying proposals.
                 self.reg.set_label(existing["candidate_id"], "rejected")
                 self.store.execute(
                     "UPDATE proposals SET candidate_id = ?, baseline_id = ?, evidence_count = ?, report = ?, "
@@ -140,7 +131,7 @@ class Governance:
                 )
                 return existing["id"], "merged"
             if existing:
-                # 该产物已有其他未决提案：不叠加修改。
+                # Do not stack changes when this artifact already has another open proposal.
                 self.reg.set_label(candidate_id, "rejected")
                 return existing["id"], "deferred"
             if self.queue_size() >= settings.PROPOSAL_QUEUE_LIMIT:
@@ -184,9 +175,9 @@ class Governance:
         return proposal
 
     def _baseline_current(self, proposal: dict[str, Any]) -> bool:
-        """候选的评测结果只适用于当时的完整产物组合。"""
+        """Require the complete artifact combination against which the candidate was evaluated."""
         versions = proposal["report"].get("effect", {}).get("baseline_versions", {})
-        # 旧报告未证明两种产物的基线，也可能使用过验证集失败证据。
+        # Old reports may lack both artifact baselines or may include holdout failure evidence.
         return versions.keys() == set(KINDS) and all(
             self.reg.production(kind).id == version for kind, version in versions.items()
         )
@@ -199,7 +190,7 @@ class Governance:
         *,
         expected_candidate_id: str | None = None,
     ) -> None:
-        """人工批准只启动金丝雀，绝不直接晋升。"""
+        """Start a canary after human approval, never promote directly."""
         with self.store.transaction(immediate=True):
             proposal = self.get(proposal_id)
             if not proposal or proposal["status"] != "pending_review":
@@ -228,7 +219,7 @@ class Governance:
             raise GovernanceError("Evaluation baseline must be refreshed; proposal marked stale")
 
     def reject(self, proposal_id: str, reviewer: str, note: str | None = None) -> None:
-        """驳回待审核或已过期的提案并废弃其候选版本；其他状态抛出 GovernanceError。"""
+        """Reject a pending or expired proposal and archive its candidate; reject other states."""
         with self.store.transaction(immediate=True):
             proposal = self._transition(
                 proposal_id,
@@ -240,7 +231,9 @@ class Governance:
             self.reg.set_label(proposal["candidate_id"], "rejected")
 
     def promote(self, proposal_id: str, reviewer: str) -> None:
-        """第二次人工确认。灰度指标一律由运营库重新计算，调用方无法传入摘要绕过门控。"""
+        """Require a second review and recompute canary gates from operations data, not caller
+        summaries.
+        """
         with self.store.transaction(immediate=True):
             proposal = self.get(proposal_id)
             if not proposal or proposal["status"] != "canary":
@@ -264,7 +257,7 @@ class Governance:
             candidate = self.reg.get(proposal["candidate_id"])
             if candidate is None:
                 raise GovernanceError("The candidate artifact no longer exists")
-            # 记录谱系，使回滚能恢复到确切的前任版本。
+            # Retain lineage so rollback restores the exact predecessor.
             self.store.execute(
                 "UPDATE artifact_versions SET parent_id = ? WHERE id = ?",
                 (proposal["baseline_id"], candidate.id),
@@ -278,7 +271,7 @@ class Governance:
     def rollback(
         self, proposal_id: str, reason: str, reviewer: str = "system", *, canary_only: bool = False
     ) -> bool:
-        """终止金丝雀，或把已晋升的版本回滚到其前任。"""
+        """Stop a canary or restore a promoted version's exact predecessor."""
         with self.store.transaction(immediate=True):
             proposal = self.get(proposal_id)
             if not proposal:
@@ -308,7 +301,7 @@ class Governance:
             return True
 
     def housekeeping(self) -> dict[str, int]:
-        """使过期提案失效，并把基线已变动的提案标记为 stale。"""
+        """Expire old proposals and mark those with changed baselines stale."""
         with self.store.transaction(immediate=True):
             at = now()
             expired = 0

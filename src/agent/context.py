@@ -1,7 +1,7 @@
-"""限定历史对话上下文的长度，同时不遮盖当前问题。
+"""Bound conversation history without obscuring the current question.
 
-历史是不可信的被引用数据，绝不是新的系统指令。按字符预算保留最近的用户/助手轮次；
-这是确定性截断，不是 LLM 摘要，也不代表较早的事实仍然有效。
+History is untrusted quoted data, never system instructions. Retain recent turns within a
+character budget using deterministic truncation, not summaries or assumptions of validity.
 """
 
 from __future__ import annotations
@@ -11,10 +11,11 @@ import json
 HISTORY_CHAR_BUDGET = 6_000
 HISTORY_MESSAGE_LIMIT = 6
 HISTORY_TURN_CHAR_LIMIT = 2_000
+DOCUMENT_CONTEXT_CHAR_BUDGET = 12_000
 
 
 def build_prompt(prompt: str, history: list[tuple[str, str]] | None) -> str:
-    """把最近的历史轮次作为不可信的引用数据附在当前问题之前；服务器证据回退消息被跳过，无有效历史则原样返回 prompt。"""
+    """Quote recent valid turns before the prompt, skipping server evidence fallbacks."""
     remaining = HISTORY_CHAR_BUDGET
     recent = []
     for role, content in reversed(history or []):
@@ -23,8 +24,8 @@ def build_prompt(prompt: str, history: list[tuple[str, str]] | None) -> str:
         if not content.strip():
             continue
         if role == "assistant" and content.lstrip().startswith("以下内容由本轮实际工具结果生成。"):
-            # 这是服务器在部分结果/出错时的证据回退，不是完整答案；
-            # 把其截断的摘录再喂给模型，可能使模型重复不完整的结果，而不是重新读取。
+            # Server evidence fallbacks represent partial or failed results, not complete answers.
+            # Replaying their clipped excerpts can encourage repetition instead of a fresh read.
             continue
         if remaining <= 0 or len(recent) >= HISTORY_MESSAGE_LIMIT:
             break
@@ -42,11 +43,13 @@ def build_prompt(prompt: str, history: list[tuple[str, str]] | None) -> str:
     )
 
 
-def bound_documents(documents: list[dict], char_budget: int = 12_000) -> list[dict]:
-    """在总预算内按相关度顺序保留完整的父文档。
+def bound_documents(
+    documents: list[dict], char_budget: int = DOCUMENT_CONTEXT_CHAR_BUDGET
+) -> list[dict]:
+    """Keep whole parent documents in relevance order within the shared budget.
 
-    绝不在任意的 1,500 字符边界处截断父文档。若单个父文档超出预算，则省略它并返回明确的工具警告；
-    调大部署预算由运维人员决定。
+    Do not truncate at an arbitrary 1,500-character boundary. Omit an oversized parent and
+    return a tool warning; only operators may raise the deployment budget.
     """
     selected = []
     remaining = char_budget

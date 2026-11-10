@@ -1,9 +1,7 @@
-"""在评估数据集上评估当前线上（或指定）的产物配置。
+"""Evaluate production or selected artifacts on an evaluation dataset.
 
-示例：
-    python scripts/run_experiment.py --seed evals/nexrag_seed.jsonl
-    python scripts/run_experiment.py --splits holdout regression --repeats 2 --json-out docs/experiment.json
-需要可访问的 LLM；文档类条目还需要检索服务。
+Accept seed files, selected splits, repeats, and optional JSON output. A reachable model
+is required, and document tasks also need retrieval.
 """
 
 from __future__ import annotations
@@ -22,7 +20,9 @@ from src.evolution.artifacts import registry  # noqa: E402
 
 
 def main() -> int:
-    """载入种子数据后评估生产（或指定版本）的提示词与参数产物；任一拆分存在安全违规时返回 1，否则返回 0。"""
+    """Load seeds and evaluate selected artifacts; return one for any safety violation, otherwise
+    zero.
+    """
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

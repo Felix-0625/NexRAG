@@ -1,4 +1,6 @@
-from pydantic import field_validator
+from typing import Literal
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 # Long enough that the placeholders that historically shipped in
@@ -48,6 +50,15 @@ class Settings(BaseSettings):
     # with prefetch + RRF fusion) for collections that carry sparse vectors, and
     # falls back to client-side BM25 RRF for collections that don't.
     enable_hybrid_search: bool = False
+    enable_five_channel_retrieval: bool = False
+    enable_body_lexical_retrieval: bool = True
+    enable_graph_rag: bool = False
+    graph_store_path: str = "data/graph/entities.sqlite"
+    # Native Qdrant candidate fusion; independent of the later rerank_fusion.
+    hybrid_fusion: Literal["rrf", "dbsf"] = "rrf"
+    hybrid_rrf_k: int = Field(default=2, ge=1)
+    hybrid_dense_weight: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    hybrid_sparse_weight: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     hybrid_bm25_weight: float = 0.3
     bm25_cache_ttl_seconds: int = 300
     # Hard cap on documents pulled into the in-memory BM25 index per
@@ -58,13 +69,21 @@ class Settings(BaseSettings):
     # Sparse query embedder (used when hybrid is enabled and the configured
     # Qdrant collection has a sparse named vector). Must match the model the
     # ingestion service used for sparse indexing.
-    sparse_query_provider: str = "fastembed"  # fastembed | none
+    sparse_query_provider: str = "fastembed"  # fastembed | bge-m3 | none
     sparse_query_model: str = "Qdrant/bm42-all-minilm-l6-v2-attentions"
+    bge_m3_model_path: str = ""
     # Keep the query model in a writable, persistent cache outside the image.
     fastembed_cache_dir: str = ""
 
     # Reranking: the existing HTTP API or local FastEmbed cross-encoder.
     enable_reranking: bool = False
+    enable_filename_retrieval: bool = False
+    # Experimental explicit-source hint within the already authorized pool.
+    # This is a ranking prior, not an additional recall channel or ACL rule.
+    enable_title_routing: bool = False
+    enable_document_scoped_retrieval: bool = False
+    enable_document_candidate_reserve: bool = False
+    enable_zh_lexical_retrieval: bool = False
     reranker_provider: str = "http"  # http | fastembed
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     reranker_api_base_url: str = ""
@@ -74,7 +93,8 @@ class Settings(BaseSettings):
     # Scores are model-dependent, not calibrated probabilities: tune on held-out
     # target-language documents when changing the checkpoint or corpus.
     rerank_top_k: int = 3
-    rerank_min_score: float = 0.05
+    # Legal K=10 receipt: .local-run/quality-20261109/tune-legal-01/ (V6).
+    rerank_min_score: float = 0.0
     rerank_required: bool = False
 
     @field_validator("rerank_top_k")
@@ -109,9 +129,15 @@ class Settings(BaseSettings):
     # ranking. "rrf" = Reciprocal Rank Fusion — keeps a strong dense hit that the
     # cross-encoder underranks; "replace" = cross-encoder score only (the older
     # behaviour, where the reranker can bury a top dense hit).
-    rerank_fusion: str = "rrf"
-    rerank_rrf_k: int = 60
-    initial_retrieval_multiplier: int = 3
+    rerank_fusion: Literal["rrf", "replace"] = "rrf"
+    rerank_rrf_k: int = Field(default=60, ge=1)
+    initial_retrieval_multiplier: int = Field(default=3, ge=1, le=10)
+    # Fixed depth for the linear path, independent of response K. 150 adds about 0.02 legal
+    # Recall@10 but raises P95 by about 2.4 s (docs/acceptance/legal-tuning-20261110.md).
+    retrieval_candidate_limit: int | None = Field(default=None, ge=1, le=200)
+    # Apply the final cap to distinct parents after scoring the eligible leaves.
+    rerank_dedup_before_limit: bool = False
+    retrieval_context_mode: Literal["parent", "matched_child", "window"] = "parent"
     # Fetch extra leaves before restoring parent text so siblings from one
     # parent do not consume every result slot. One preserves legacy behavior.
     parent_candidate_multiplier: int = 1

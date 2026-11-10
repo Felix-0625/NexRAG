@@ -1,1 +1,1 @@
-"""NexRAG 记忆包。"""
+"""NexRAG memory package."""

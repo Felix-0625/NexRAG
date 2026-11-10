@@ -1,7 +1,7 @@
-"""在公开验收规则产生通过分数之前先做校验。
+"""Validate public acceptance rules before they can produce passing scores.
 
-只接受 evaluators/runner 实际会用到的键。数据集存储用的元数据由服务端提供，
-绝不来自管理员填写的 expected JSON。
+Accept only evaluator and runner keys; dataset metadata comes from the server, not
+administrator-written expected JSON.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ LIST_RULES = {
 }
 RULE_KEYS = LIST_RULES | {"expected_rows", "must_deny"}
 ALLOWED_KEYS = RULE_KEYS | {"model_id"}
-# 这些名称是 AgenticRunner/build_workspace_toolset 注册的工具。新增工具需要
-# 显式更新验收规则；拼错的禁用工具名不能让安全回归悄悄通过。
+# Keep names aligned with registered agent and workspace tools; new tools require
+# explicit rule support so misspelled prohibitions cannot silently pass safety regressions.
 TOOL_NAMES = {
     "plan_analysis",
     "get_business_schema",
@@ -51,8 +51,8 @@ def _validate_list_rule(name: str, values: Any) -> list[str]:
 
 
 def _validate_rows(rows: Any) -> None:
-    # [] 表示断言 SQL 确实返回零行，不是空断言；
-    # 上面的其他列表规则不能用 [] 来悄悄关闭检查。
+    # An empty expected_rows list asserts an actual zero-row SQL result;
+    # other list rules cannot silently disable checks with empty lists.
     if not isinstance(rows, list) or len(rows) > 100:
         raise ValueError("expected_rows 必须是至多 100 行的 JSON 对象数组")
     for row in rows:
@@ -70,7 +70,7 @@ def _validate_rows(rows: Any) -> None:
 
 
 def validate_expected(expected: Any) -> dict[str, Any]:
-    """返回校验后的规则；拒绝未知、无效果或格式错误的期望。"""
+    """Return validated rules, rejecting unknown, ineffective, or malformed expectations."""
     if not isinstance(expected, dict):
         raise ValueError("expected 必须是 JSON 对象")
     if any(not isinstance(key, str) for key in expected):

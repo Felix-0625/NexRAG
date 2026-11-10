@@ -1,4 +1,4 @@
-"""过滤诊断必须读取与查询相同的真实租户快照。"""
+"""Filter diagnostics must use the query's actual tenant snapshot."""
 
 import asyncio
 import sqlite3
@@ -43,6 +43,7 @@ def test_empty_filter_diagnoses_only_same_snapshot_and_authorized_scope(
     monkeypatch.setattr(adapters, "create_business_adapter", lambda _: adapter)
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         async with business_read_session():
             first = await asyncio.to_thread(tools.query_business, query, "b", None)
             with sqlite3.connect(path) as owner:

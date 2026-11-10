@@ -1,4 +1,4 @@
-"""归一化的投资价值，须先有经核实的基准值，才能换算成收益率单位。"""
+"""Normalized investment values need verified bases before conversion to return units."""
 
 from copy import deepcopy
 
@@ -27,6 +27,7 @@ SOURCE = (
 
 
 def ledger_for(text=SOURCE, question=QUESTION):
+    """Provide ledger for test data or behavior for this scenario."""
     ledger = EvidenceLedger(
         prompt=question, required={"kb", "arithmetic:indexed_return_difference"}
     )
@@ -35,6 +36,7 @@ def ledger_for(text=SOURCE, question=QUESTION):
 
 
 def result_for(ledger):
+    """Provide result for test data or behavior for this scenario."""
     binding = prepare_comparison(ledger.prompt, ledger.entries)
     return calculate_comparison(ledger.entries, binding, 2)
 
@@ -42,7 +44,9 @@ def result_for(ledger):
 def test_non_hundred_baseline_is_used_and_output_is_not_the_raw_money_difference():
     ledger = ledger_for()
     result = result_for(ledger)
-    assert result["rounded_result"] == "30.00"  # 直接相减会得到 75，而不是 30。
+    assert (
+        result["rounded_result"] == "30.00"
+    )  # Direct subtraction gives 75, not the correct normalized difference of 30.
     assert result["unit"] == "percentage points"
     assert result["comparison_binding"]["baseline_value"] == "250"
     assert result["comparison_binding"]["baseline_period"] == "2020"
@@ -90,7 +94,9 @@ def test_external_tool_payload_cannot_forge_a_builtin_comparison_certificate():
     ledger.add("tool", result, tool_id="builtin:indexed_return_difference")
     assert len(completed_comparisons(ledger)) == 1
     ledger.required.add("web")
-    assert not completed_comparisons(ledger)  # 不得遗漏用户要求的其他无关交付项。
+    assert not completed_comparisons(
+        ledger
+    )  # Do not omit unrelated deliverables requested by the user.
 
 
 @pytest.mark.parametrize("field,value", [("operation", "subtract"), ("unit", "USD")])

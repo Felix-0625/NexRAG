@@ -1,4 +1,4 @@
-"""典型业务指标：去重实体、相等金额与租户范围。"""
+"""Canonical business metrics: distinct entities, equal amounts, and tenant scope."""
 
 import asyncio
 import hashlib
@@ -49,6 +49,7 @@ DEFINITIONS = {
 
 @pytest.fixture
 def source(tmp_path):
+    """Create an isolated business-data source for this scenario."""
     path = tmp_path / "source.db"
     with sqlite3.connect(path) as owner:
         owner.executescript(
@@ -81,6 +82,7 @@ def source(tmp_path):
 
 
 def read_metrics(adapter, tenant, names, filters=()):
+    """Provide read metrics test data or behavior for this scenario."""
     session = BusinessReadSession()
     try:
         values = []
@@ -105,7 +107,7 @@ def test_registered_metrics_keep_entity_counts_and_identical_order_amounts(sourc
     }
     assert len({m["snapshot_id"] for m in metrics}) == 1
     assert {m["scope_id"] for m in metrics} == {"a"}
-    assert metrics[1]["unit"] is None  # 不要编造币种。
+    assert metrics[1]["unit"] is None  # Do not invent a currency.
     assert read_metrics(adapter, "b", ["order_count", "order_total"])[1]["value"] == "9900.0"
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
 
@@ -163,6 +165,7 @@ def test_same_production_agent_renders_metrics_from_references_without_numeric_p
     step, observed = 0, []
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal step
         step += 1
         if step == 1:
@@ -171,7 +174,7 @@ def test_same_production_agent_renders_metrics_from_references_without_numeric_p
                 [ToolCallPart("query_business_metrics", {"metric_ids": list(DEFINITIONS)})]
             )
         assert info.output_tools
-        assert not info.function_tools  # 证据齐全后进入报告阶段。
+        assert not info.function_tools  # Enter reporting only once evidence is complete.
         for message in messages:
             observed.extend(
                 part.content
@@ -179,8 +182,8 @@ def test_same_production_agent_renders_metrics_from_references_without_numeric_p
                 if isinstance(part, ToolReturnPart) and part.tool_name == "query_business_metrics"
             )
         if step == 2:
-            # 模型不能通过写出一个看似合理、却属于其他业务粒度的数字，
-            # 来绕过只引用结果的报告。
+            # Plausible numbers at the wrong business grain cannot bypass
+            # reference-only report rendering.
             return ModelResponse([TextPart("订单数3，总金额200。")])
         return ModelResponse(
             [ToolCallPart("complete_business_report", {"metric_ids": list(DEFINITIONS)})]
@@ -196,6 +199,7 @@ def test_same_production_agent_renders_metrics_from_references_without_numeric_p
     )
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 "查询数据库订单数和总金额，以及商品行数",
@@ -205,8 +209,8 @@ def test_same_production_agent_renders_metrics_from_references_without_numeric_p
 
     answer = asyncio.run(run())
     assert evaluation.status == "ok"
-    # 所需证据已齐全。忽略错误的数字描述，
-    # 直接渲染实际结果，不再多走一轮模型补全。
+    # Evidence is complete: ignore incorrect narrative numbers
+    # and render actual results without another model completion.
     assert step == 2
     assert "订单数3" not in answer
     assert "| 订单数 | 2 | orders | order_count |" in answer
@@ -216,13 +220,14 @@ def test_same_production_agent_renders_metrics_from_references_without_numeric_p
 
 
 def test_production_agent_cannot_finish_with_wrong_entity_count_and_unjoined_details(source):
-    """原有的自然语言遗漏必须在类型化修复之前就失败。"""
+    """Reject the original natural-language omission before typed repair can hide it."""
     _, adapter = source
     runner = AgenticRunner()
     runner._agent = runner._build_agent()
     step = 0
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal step
         step += 1
         if step == 1:
@@ -275,6 +280,7 @@ def test_production_agent_cannot_finish_with_wrong_entity_count_and_unjoined_det
     )
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 "请关联商品与订单列出完整明细，并使用已登记业务指标给出订单数、订单总金额和商品行数。",
@@ -326,6 +332,7 @@ def test_join_detail_and_selected_report_cannot_omit_requested_amount(source):
                 ledger.add("metric", metric, query_evidence_id=identifier)
 
         def detail(sql):
+            """Provide detail test data or behavior for this scenario."""
             result = session.read(sql, "a", adapter=adapter)
             return ledger.add(
                 "db", result["rows"], sql=sql, query_semantics=result["query_semantics"]
@@ -340,8 +347,8 @@ def test_join_detail_and_selected_report_cannot_omit_requested_amount(source):
             "SELECT i.item_id,i.order_id,i.price,o.amount AS 订单金额 FROM items i JOIN orders o ON i.order_id=o.order_id"
         )
         assert not ledger.missing()
-        # 台账中其他位置的完整证据，不能让报告中
-        # 明确选定的不完整结果变得合法。
+        # Complete evidence elsewhere in the ledger cannot legitimize
+        # an explicitly selected incomplete result.
         with pytest.raises(ValueError, match="报告选定的明细"):
             render_business_body(
                 BusinessReport(metric_ids=list(DEFINITIONS), detail_evidence_ids=[incomplete]),
@@ -387,6 +394,7 @@ def test_metric_correction_feedback_never_drops_filters_or_exposes_catalog_after
     )
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         async with business_read_session() as session:
             unknown = await execute_business_metrics(deps, ["guessed_order_metric"])
             assert unknown["available_metric_ids"] == sorted(DEFINITIONS)
@@ -412,6 +420,7 @@ def test_actual_agent_rejects_unrequested_filter_before_opening_source(source):
     phase = 0
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal phase
         phase += 1
         if phase == 1:
@@ -451,6 +460,7 @@ def test_actual_agent_rejects_unrequested_filter_before_opening_source(source):
     )
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 "查询全部订单总金额",

@@ -1,4 +1,4 @@
-"""工具调用成功也不得在最终业务答复中掩盖遗漏。"""
+"""Successful tools must not hide missing business deliverables."""
 
 import pytest
 
@@ -18,6 +18,7 @@ def test_presentation_precision_cannot_fabricate_a_zero_business_answer(formatti
 
 
 def evidence():
+    """Provide evidence test data or behavior for this scenario."""
     ledger = EvidenceLedger(required={"db", "db_count", "db_total"})
     ledger.add(
         "db",

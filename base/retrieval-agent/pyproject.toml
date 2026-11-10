@@ -2,15 +2,19 @@
 name = "agentic-retrieval"
 version = "0.1.0"
 description = "Agentic retrieval service for Open WebUI — LLM-driven RAG with query rewriting, decomposition, and corrective retrieval"
+license = "MPL-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0,!=0.136.3",  # 0.136.3 is malicious (MAL-2026-4750); injects fastar typosquat via [standard] extras
     "uvicorn[standard]>=0.30.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
-    "qdrant-client>=1.12.0,<3.0",
+    "qdrant-client>=1.17.0,<3.0",  # Native parameterized and weighted RRF.
     "httpx>=0.27.0",
     "rank-bm25>=0.2.2",
+    "spacy>=3.8.18,<3.9",
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+    "zh-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl",
     "fastembed>=0.4.0",                 # in-process sparse query embedder (BM42 / SPLADE / BGE-M3 sparse)
     # Must be >=1.50: earlier releases import the private ``opentelemetry._events``,
     # which otel-api dropped in 1.44.0 — and pydantic-ai's own otel bound is

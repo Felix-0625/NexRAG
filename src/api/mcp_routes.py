@@ -1,4 +1,4 @@
-"""经管理员审核的 MCP 接口；凭据与调用均保留在服务端。"""
+"""Administrator-reviewed MCP endpoints that keep credentials and calls server-side."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/workspace/mcp", tags=["mcp"])
 
 
 def failure(exc):
-    """把 MCP 异常转为 HTTP 错误：拒绝 403、审批过期 409、服务不可用 503，其余 400。"""
+    """Map MCP denial, stale approval, and unavailability to 403, 409, and 503; use 400 otherwise."""
     code = (
         403
         if isinstance(exc, registry.MCPDenied)
@@ -25,6 +25,8 @@ def failure(exc):
 
 
 class ServerForm(BaseModel):
+    """MCP server configuration and credential update request."""
+
     name: str = Field(min_length=1, max_length=100)
     url: str = Field(max_length=2048)
     identifier: str | None = Field(default=None, max_length=64)
@@ -34,6 +36,8 @@ class ServerForm(BaseModel):
 
 
 class ApprovalForm(BaseModel):
+    """Explicit read-only approval pinned to a server revision and schema."""
+
     revision: int = Field(ge=1)
     schema_hash: str = Field(pattern="^[a-f0-9]{64}$")
     read_only_confirmed: bool = False
@@ -41,13 +45,13 @@ class ApprovalForm(BaseModel):
 
 @router.get("")
 def servers(principal: Principal = Depends(require_admin)):
-    """管理员列出已登记的 MCP 连接（不含凭据，仅标明是否已设置）及最近的审计事件。"""
+    """List registered MCP servers and recent audit events without disclosing credentials."""
     return {"data": registry.list_servers(principal), "events": registry.audit_events(principal)}
 
 
 @router.post("")
 def save(body: ServerForm, principal: Principal = Depends(require_admin)):
-    """管理员新增或更新 MCP 连接；保存会使该连接已有的工具审批失效，需重新发现并审批。"""
+    """Save a server and invalidate its tool approvals until rediscovery and review."""
     try:
         return registry.save_server(principal, **body.model_dump())
     except registry.MCPError as exc:
@@ -56,7 +60,7 @@ def save(body: ServerForm, principal: Principal = Depends(require_admin)):
 
 @router.post("/{identifier}/discover")
 async def discover(identifier: str, principal: Principal = Depends(require_admin)):
-    """管理员连接指定 MCP 服务并发现其公布的工具；新发现或变更的工具默认未审批。"""
+    """Discover tools on a server, leaving new or changed schemas unapproved."""
     try:
         return await registry.discover_server(principal, identifier)
     except registry.MCPError as exc:
@@ -67,7 +71,9 @@ async def discover(identifier: str, principal: Principal = Depends(require_admin
 def approve(
     identifier: str, name: str, body: ApprovalForm, principal: Principal = Depends(require_admin)
 ):
-    """管理员批准一个 MCP 工具；须确认其为只读，且连接修订号与工具 schema 哈希仍与当前一致，否则返回 409。"""
+    """Approve an explicitly read-only tool only if its server revision and schema hash still
+    match.
+    """
     try:
         return registry.approve_tool(principal, identifier, name, **body.model_dump())
     except registry.MCPError as exc:
@@ -76,7 +82,7 @@ def approve(
 
 @router.post("/{identifier}/tools/{name}/revoke")
 def revoke(identifier: str, name: str, principal: Principal = Depends(require_admin)):
-    """管理员撤销一个 MCP 工具的审批，撤销后 Agent 不再能调用它。"""
+    """Revoke tool approval so the agent can no longer invoke it."""
     try:
         return registry.revoke_tool(principal, identifier, name)
     except registry.MCPError as exc:

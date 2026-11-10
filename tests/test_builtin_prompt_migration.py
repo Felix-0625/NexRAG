@@ -1,4 +1,4 @@
-"""修正旧的共享知识库种子，同时不覆盖运维人员或 RSI 产生的内容。"""
+"""Migrate old shared-knowledge seeds without replacing operator or evolved content."""
 
 import pytest
 
@@ -12,6 +12,7 @@ from src.evolution.builtin_migrations import (
 
 
 def seed(reg, **kwargs):
+    """Provide seed test data or behavior for this scenario."""
     legacy = DEFAULT_GUIDANCE.replace(CURRENT_KNOWLEDGE_RULE, LEGACY_KNOWLEDGE_RULE)
     return reg.create("prompt", legacy, label="production", note="built-in default", **kwargs)
 
@@ -49,11 +50,13 @@ def test_concurrent_first_requests_share_one_production_version(tmp_path):
     stores = [OpsStore(tmp_path / "ops.db") for _ in range(2)]
 
     def initialize(store):
+        """Provide initialize test data or behavior for this scenario."""
         reg = ArtifactRegistry(store)
         by_label = reg.by_label
         initial = True
 
         def synchronize_first_read(kind, label):
+            """Provide synchronize first read test data or behavior for this scenario."""
             nonlocal initial
             artifact = by_label(kind, label)
             if initial:

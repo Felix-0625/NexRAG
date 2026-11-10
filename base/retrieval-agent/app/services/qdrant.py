@@ -16,6 +16,7 @@ collection lacks sparse vectors.
 
 import asyncio
 import logging
+from urllib.parse import urlsplit
 
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -40,16 +41,27 @@ _client: QdrantClient | None = None
 
 
 def get_client() -> QdrantClient:
+    """Return the shared Qdrant client."""
     global _client
     if _client is None:
+        uri = settings.qdrant_uri
+        parsed = urlsplit(uri if "://" in uri else f"//{uri}")
+        # A local HTTP sidecar must stay reachable even with OS or env proxies.
+        local_http = parsed.scheme in ("", "http") and parsed.hostname in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }
         _client = QdrantClient(
-            url=settings.qdrant_uri,
+            url=uri,
             api_key=settings.qdrant_api_key,
+            trust_env=not local_http,
         )
     return _client
 
 
 def close_client() -> None:
+    """Close the shared Qdrant client."""
     global _client
     if _client is not None:
         _client.close()
@@ -92,6 +104,19 @@ def has_sparse_vectors() -> bool:
         return False
 
     sparse_cfg = getattr(info.config.params, "sparse_vectors", None)
+    metadata = getattr(info.config, "metadata", None)
+    recorded_model = metadata.get("nexrag_sparse_model") if isinstance(metadata, dict) else None
+    if recorded_model and recorded_model != settings.sparse_query_model.lower():
+        raise RuntimeError("Sparse query model differs from the indexed model")
+    if settings.sparse_query_model.lower() == "baai/bge-m3" and not recorded_model:
+        raise RuntimeError("BGE-M3 query weights require a verified rebuilt sparse index")
+    if (
+        settings.sparse_query_model.lower() == "baai/bge-m3"
+        and sparse_cfg
+        and sparse_cfg.get(SPARSE_VECTOR_NAME) is not None
+        and sparse_cfg[SPARSE_VECTOR_NAME].modifier == models.Modifier.IDF
+    ):
+        raise RuntimeError("BGE-M3 query weights require a rebuilt sparse index")
     _sparse_capable = bool(sparse_cfg)
     return _sparse_capable
 
@@ -153,6 +178,8 @@ async def vector_search(
     query_vector: list[float],
     sparse_vector: models.SparseVector | None,
     k: int,
+    *,
+    document: tuple[str, str, str] | None = None,
 ) -> RetrievalResult:
     """Query the configured Qdrant collection.
 
@@ -167,6 +194,19 @@ async def vector_search(
     client = get_client()
     qdrant_collection = settings.qdrant_index
     qfilter = _collection_name_filter(collection_names)
+    if document is not None:
+        if document[0] not in collection_names:
+            return RetrievalResult(texts=[], metadatas=[], distances=[])
+        fields = ("meta.collection_name", "meta.file_id", "meta.ingest_version")
+        qfilter = models.Filter(
+            must=[
+                qfilter,
+                *(
+                    models.FieldCondition(key=key, match=models.MatchValue(value=value))
+                    for key, value in zip(fields, document, strict=True)
+                ),
+            ]
+        )
 
     # The sync QdrantClient blocks; run capability probe and query in a worker
     # thread so a slow Qdrant call doesn't stall the whole event loop.
@@ -199,7 +239,19 @@ async def vector_search(
                             filter=qfilter,
                         ),
                     ],
-                    query=models.FusionQuery(fusion=models.Fusion.RRF),
+                    query=(
+                        models.FusionQuery(fusion=models.Fusion.DBSF)
+                        if settings.hybrid_fusion == "dbsf"
+                        else models.RrfQuery(
+                            rrf=models.Rrf(
+                                k=settings.hybrid_rrf_k,
+                                weights=[
+                                    settings.hybrid_dense_weight,
+                                    settings.hybrid_sparse_weight,
+                                ],
+                            )
+                        )
+                    ),
                     limit=k,
                 )
             )
@@ -218,19 +270,7 @@ async def vector_search(
         log.exception("Qdrant query failed for collection %s", qdrant_collection)
         return RetrievalResult(texts=[], metadatas=[], distances=[])
 
-    texts: list[str] = []
-    metadatas: list[dict] = []
-    distances: list[float] = []
-    for point in response.points:
-        payload = point.payload or {}
-        texts.append(payload.get("content", ""))
-        metadatas.append(payload.get("meta", {}))
-        score = point.score
-        # Dense path: cosine in [-1, 1] → normalize to [0, 1].
-        # Hybrid path: RRF score is already a positive rank-fusion score.
-        distances.append(score if use_hybrid else (score + 1.0) / 2.0)
-
-    return RetrievalResult(texts=texts, metadatas=metadatas, distances=distances)
+    return _search_response(response, document, use_hybrid)
 
 
 # ---------------------------------------------------------------------------
@@ -282,3 +322,26 @@ def scroll_collection_texts(collection_names: list[str]) -> list[tuple[str, dict
         offset = next_offset
 
     return results
+
+
+def _search_response(response, document, use_hybrid: bool) -> RetrievalResult:
+    texts: list[str] = []
+    metadatas: list[dict] = []
+    distances: list[float] = []
+    for point in response.points:
+        payload = point.payload or {}
+        meta = payload.get("meta", {})
+        if (
+            document is not None
+            and (meta.get("collection_name"), meta.get("file_id"), meta.get("ingest_version"))
+            != document
+        ):
+            continue
+        texts.append(payload.get("content", ""))
+        metadatas.append(meta)
+        score = point.score
+        # Dense path: cosine in [-1, 1] → normalize to [0, 1].
+        # Hybrid path: RRF score is already a positive rank-fusion score.
+        distances.append(score if use_hybrid else (score + 1.0) / 2.0)
+
+    return RetrievalResult(texts=texts, metadatas=metadatas, distances=distances)

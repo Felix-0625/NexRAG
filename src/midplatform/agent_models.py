@@ -1,4 +1,4 @@
-"""服务端持有的单一 NexRAG agent 模型注册表，不做服务路由。"""
+"""Server-owned model registry for one agent, not a service router."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ PROVIDERS = {"ollama", "openai", "deepseek", "anthropic", "google", "custom"}
 
 
 class ModelForm(BaseModel):
+    """Validated provider configuration and model-distribution settings."""
+
     name: str = Field(min_length=1, max_length=100)
     provider: str
     protocol: str = "openai"
@@ -35,7 +37,7 @@ class ModelForm(BaseModel):
     @field_validator("allowed_user_ids")
     @classmethod
     def valid_account_ids(cls, values):
-        """账号标识不得为空白或超过 128 字符；去除首尾空白、去重并排序。"""
+        """Trim, deduplicate, and sort IDs, rejecting blanks and values over 128 characters."""
         if any(not value.strip() or len(value) > 128 for value in values):
             raise ValueError("模型使用账号标识无效")
         return sorted({value.strip() for value in values})
@@ -43,7 +45,7 @@ class ModelForm(BaseModel):
     @field_validator("provider")
     @classmethod
     def provider_supported(cls, value):
-        """厂商必须在受支持的集合内。"""
+        """Require a supported provider."""
         if value not in PROVIDERS:
             raise ValueError("不支持的模型厂商")
         return value
@@ -51,7 +53,7 @@ class ModelForm(BaseModel):
     @field_validator("protocol")
     @classmethod
     def protocol_supported(cls, value):
-        """接口协议必须在受支持的集合内。"""
+        """Require a supported protocol."""
         if value not in PROTOCOLS:
             raise ValueError("不支持的接口协议")
         return value
@@ -59,7 +61,7 @@ class ModelForm(BaseModel):
     @field_validator("base_url")
     @classmethod
     def valid_url(cls, value):
-        """接口地址须为 HTTP(S)，且不含凭据、查询参数或片段；去除首尾空白与末尾斜杠。"""
+        """Normalize HTTP(S) endpoints without credentials, queries, or fragments."""
         parsed = urlsplit(value.strip())
         if (
             parsed.scheme not in {"http", "https"}
@@ -113,7 +115,7 @@ def _ensure():
 
 
 def records():
-    """返回全部已登记模型的完整记录（含加密密钥字段，仅限服务端内部使用，对外须经 public_model）。"""
+    """Return full internal records; public callers must redact keys with public_model."""
     return [
         {**json.loads(row["config"]), "id": row["id"]}
         for row in _ensure().query("SELECT * FROM agent_models ORDER BY rowid")
@@ -121,16 +123,16 @@ def records():
 
 
 def default_id():
-    """返回当前系统默认模型的 ID。"""
+    """Return the system default model ID."""
     return _ensure().query_one("SELECT value FROM agent_model_settings WHERE key='default'")[
         "value"
     ]
 
 
 def resolve_model(identifier: str | None = None, *, enabled_only=True):
-    """按 ID 取模型记录；ID 为空或 "NexRAG" 时取系统默认模型。
+    """Resolve a model, using the default for empty IDs or NexRAG.
 
-    模型不存在（或 enabled_only 时已停用）抛出 ValueError。不检查调用账号是否有权使用。
+    Reject missing or disallowed disabled models; account access is checked separately.
     """
     identifier = default_id() if identifier in {None, "", "NexRAG"} else identifier
     row = _ensure().query_one("SELECT * FROM agent_models WHERE id=?", (identifier,))
@@ -145,14 +147,14 @@ def resolve_model(identifier: str | None = None, *, enabled_only=True):
         and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
         and parsed.port in {11434, 11435}
     ):
-        # 只有原生启动器确认云端推理已禁用后才会提供此 URL。
-        # 不要改写已持久化的 provider 凭据。
+        # The native launcher supplies this URL only after proving cloud inference is disabled.
+        # Do not rewrite persisted provider credentials.
         record["base_url"] = managed.rstrip("/")
     return record
 
 
 def model_available(record, principal):
-    """模型的分发范围与数据外发权限是两回事。"""
+    """Separate model distribution from data-egress permission."""
     return bool(record.get("enabled")) and (
         principal.role == "admin"
         or record.get("audience", "all") == "all"
@@ -161,14 +163,14 @@ def model_available(record, principal):
 
 
 def require_model_access(record, principal):
-    """要求该模型已启用且分发给当前账号（管理员除外的受众限制），否则抛出 ValueError；通过则原样返回记录。"""
+    """Require an enabled model distributed to the account, with administrator audience exceptions."""
     if not model_available(record, principal):
         raise ValueError("此模型未分发给当前账号或使用权限已撤销，请选择其他模型")
     return record
 
 
 def key_for(record):
-    """取出模型的明文 API 密钥：环境变量托管的模型用配置中的密钥，否则解密已存储的密文；无法解密抛出 ValueError。仅限服务端内部使用。"""
+    """Read environment-backed or decrypted keys for server-side use only."""
     if record.get("environment_key"):
         return settings.LLM_API_KEY
     try:
@@ -182,7 +184,7 @@ def key_for(record):
 
 
 def public_model(record, *, admin=False):
-    """返回模型的对外视图，永不含密钥；admin 为真时才附带受众、可用账号、接口地址和是否已设置密钥。"""
+    """Return secret-free model details with management fields only for administrators."""
     item = {
         key: record[key] for key in ("id", "name", "provider", "protocol", "model_name", "enabled")
     }
@@ -198,10 +200,10 @@ def public_model(record, *, admin=False):
 
 
 def save_model(form: ModelForm, identifier=None):
-    """新增模型（identifier 为空）或更新已有模型，密钥加密保存，返回管理员视图。
+    """Create or update a model with encrypted keys and return its administrator view.
 
-    指定账号必须已在组织目录登记；更换厂商或接口地址时须重新填写或明确清除旧密钥；
-    默认模型不能被停用或限定受众。违反上述规则抛出 ValueError。
+    Require known accounts and replacement or clearing of keys after endpoint changes.
+    The default must stay enabled and available to every account.
     """
     store = _ensure()
     previous = resolve_model(identifier, enabled_only=False) if identifier else {}
@@ -237,7 +239,7 @@ def save_model(form: ModelForm, identifier=None):
             environment_key=False,
         )
     with store.transaction() as conn:
-        # 在写事务内重新检查：默认模型必须始终可用。
+        # Recheck inside the transaction so the default always remains available.
         current_default = conn.execute(
             "SELECT value FROM agent_model_settings WHERE key='default'"
         ).fetchone()[0]
@@ -252,7 +254,7 @@ def save_model(form: ModelForm, identifier=None):
 
 
 def set_default(identifier):
-    """把指定模型设为系统默认；该模型须存在、已启用且对全体账号可用，否则抛出 ValueError。"""
+    """Set an existing, enabled, universally available model as default."""
     store = _ensure()
     with store.transaction() as conn:
         row = conn.execute("SELECT config FROM agent_models WHERE id=?", (identifier,)).fetchone()
@@ -264,7 +266,7 @@ def set_default(identifier):
 
 
 def deepseek_profile(model_name):
-    """借助 SDK 已有的 V4 能力解析当前的 Flash 别名。"""
+    """Resolve the current Flash alias with existing SDK DeepSeek V4 support."""
     from pydantic_ai.providers.deepseek import DeepSeekProvider
 
     profile_name = "deepseek-v4-flash" if model_name == "deepseek-flash" else model_name
@@ -272,7 +274,7 @@ def deepseek_profile(model_name):
 
 
 def build_model(record):
-    """使用各 provider 的原生协议，同时共用一个 Agent/工具循环。"""
+    """Use provider-native protocols within the shared agent and tool loop."""
     key = key_for(record)
     if record["protocol"] == "anthropic":
         from pydantic_ai.models.anthropic import AnthropicModel
@@ -302,8 +304,8 @@ def build_model(record):
         provider = DeepSeekProvider(
             openai_client=AsyncOpenAI(api_key=key, base_url=record["base_url"])
         )
-        # DeepSeek 当前的 Flash 别名是 V4 系列 thinking 模型。锁定版本的 SDK 按前缀
-        # 识别该系列的强制工具调用限制，而 HTTP 模型 ID 必须保持为目录中的真实 ID。
+        # The current Flash alias uses V4 thinking; the pinned SDK detects tool limits by prefix,
+        # while the HTTP model ID must remain the registry's actual ID.
         profile = deepseek_profile(record["model_name"]) or profile
     if record["protocol"] == "responses":
         return OpenAIResponsesModel(record["model_name"], provider=provider)

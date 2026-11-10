@@ -1,7 +1,7 @@
-"""渲染经过认证的期间计算，单位不由模型选择。
+"""Render certified period calculations with server-controlled units.
 
-这里只覆盖显式的纯文档期间比较契约；Agent 仍须先检索并执行经过校验的算术工具。
-最终正文只选取真实的证据引用，数值、角色、单位和公式都来自服务器持有的当前计算凭证。
+Handle explicit document-only comparisons after retrieval and validated arithmetic. Render
+only actual evidence references; values, roles, units, and formulas come from run-local proofs.
 """
 
 from __future__ import annotations
@@ -12,7 +12,9 @@ from src.agent.source_facts import period_request
 
 
 def temporal_results(ledger) -> list[dict]:
-    """仅当任务只需知识库加百分比变化且证据齐全时，返回与请求期间绑定一致的计算条目；否则返回空列表。"""
+    """Return request-bound period results only for complete knowledge-plus-percentage-change
+    tasks.
+    """
     if ledger.required != {"kb", "arithmetic:percent_change"} or ledger.missing():
         return []
     try:
@@ -33,7 +35,7 @@ def temporal_results(ledger) -> list[dict]:
 
 
 def render_temporal_report(report, ledger) -> str:
-    """用账本中已认证的期间计算渲染 Markdown 报告；引用不存在、缺少来源或单位不一致时抛出 ValueError。"""
+    """Render certified period results; reject missing references, sources, or inconsistent units."""
     available = {entry["id"]: entry for entry in temporal_results(ledger)}
     known_knowledge = {entry["id"] for entry in ledger.entries if entry["kind"] == "kb"}
     if report.metric_ids or report.detail_evidence_ids:
@@ -52,6 +54,7 @@ def render_temporal_report(report, ledger) -> str:
         raise ValueError("期间计算缺少一致且明确的来源单位")
 
     def literal(value):
+        """Escape a value for safe literal Markdown rendering."""
         return html.escape(str(value)).replace("|", "\\|").replace("\n", " ")
 
     return (

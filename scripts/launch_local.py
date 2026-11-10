@@ -1,7 +1,7 @@
-"""准备并监管 NexRAG 的 Windows 原生进程。
+"""Prepare and supervise Windows-native NexRAG processes.
 
-由 start.cmd/start.ps1 使用 uv 管理的 Python 3.12 调用。依赖、下载的可执行文件
-和日志都留在当前检出目录内；不拼接 shell 命令、不做全局包安装，也不终止已有服务。
+start.cmd/start.ps1 invokes uv-managed Python 3.12. Keep dependencies, tools, and logs
+inside the checkout; avoid shell concatenation, global installs, and killing other services.
 """
 
 from __future__ import annotations
@@ -48,11 +48,12 @@ NODE_SHA256 = "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20"
 
 
 def say(message: str) -> None:
+    """Print a flushed launcher progress message."""
     print(f"[NexRAG] {message}", flush=True)
 
 
 def run(args: list[str | Path], *, cwd: Path = ROOT, env: dict | None = None) -> str:
-    """捕获工具输出，避免凭据作为命令参数被回显。"""
+    """Capture tool output so credential-bearing arguments are not echoed."""
     process = subprocess.Popen(
         [str(arg) for arg in args],
         cwd=cwd,
@@ -84,7 +85,7 @@ def run(args: list[str | Path], *, cwd: Path = ROOT, env: dict | None = None) ->
 
 
 def download(url: str, target: Path, digest: str | None = None) -> Path:
-    """下载到临时 .part 文件，提供 digest 时校验 SHA256，通过后才替换目标；已缓存且校验通过则跳过。"""
+    """Download through a temporary .part file, verifying an optional SHA-256 before replacement."""
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists() or (digest and sha256(target) != digest):
         say(f"Downloading {target.name} (first run; cached for subsequent starts)...")
@@ -106,20 +107,20 @@ def download(url: str, target: Path, digest: str | None = None) -> Path:
 
 
 def sha256(path: Path) -> str:
-    """返回文件内容的 SHA256 十六进制摘要。"""
+    """Return a file's SHA-256 hex digest."""
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def fetch_json(url: str) -> dict:
-    """以 20 秒超时请求 URL 并解析 JSON 响应。"""
+    """Fetch and decode JSON with a 20-second timeout."""
     request = urllib.request.Request(url, headers={"User-Agent": "NexRAG-local-launcher"})
     with urllib.request.urlopen(request, timeout=20) as response:
         return json.load(response)
 
 
 def github_zip(repository: str, version: str, asset_name: str, folder: Path) -> None:
-    """下载 GitHub 指定版本的发布压缩包并解压到 folder；发布资产没有 SHA256 摘要时拒绝安装。"""
+    """Download a pinned GitHub release and require a published SHA-256 before extraction."""
     release = fetch_json(f"https://api.github.com/repos/{repository}/releases/tags/{version}")
     asset = next(item for item in release["assets"] if item["name"] == asset_name)
     digest = asset.get("digest", "")
@@ -131,7 +132,7 @@ def github_zip(repository: str, version: str, asset_name: str, folder: Path) -> 
 
 
 def prepare_node() -> Path:
-    """使用达到安全基线的 Node 22，或下载经 SHA256 校验的固定版本。"""
+    """Use Node 22 at the security baseline or download a verified pinned release."""
     node = shutil.which("node")
     if node:
         version = run([node, "--version"]).strip().lstrip("v").split(".")
@@ -155,7 +156,7 @@ def prepare_node() -> Path:
 
 
 def prepare_qdrant() -> Path:
-    """按需下载固定版本的 Qdrant 发布包到 .local-run/tools，返回 qdrant.exe 路径。"""
+    """Download pinned Qdrant on demand and return its executable path."""
     executable = STATE / "tools" / "qdrant-1.19.1" / "qdrant.exe"
     if not executable.exists():
         github_zip(
@@ -165,23 +166,27 @@ def prepare_qdrant() -> Path:
 
 
 def prepare_environment() -> dict[str, str]:
+    """Load native runtime settings and fill absent service secrets."""
     return native_environment.prepare_environment(ROOT, STATE, SECRET_NAMES)
 
 
 def pick_ports() -> dict[str, int]:
+    """Reserve and select nonconflicting loopback service ports."""
     return native_environment.pick_ports()
 
 
 def url(port: int) -> str:
+    """Return the service HTTP base URL on loopback."""
     return native_environment.url(port)
 
 
 def service_environments(base: dict[str, str], ports: dict[str, int]) -> dict[str, dict]:
+    """Build isolated environment mappings for each native service."""
     return native_environment.service_environments(base, ports, root=ROOT, state=STATE, report=say)
 
 
 def prepare_python(uv: str, name: str, project: Path, base: dict) -> Path:
-    """按 uv.lock 与 pyproject.toml 的指纹，用 uv sync --frozen 同步该项目的独立虚拟环境，指纹未变则跳过，返回其 python.exe。"""
+    """Sync a project's isolated environment from frozen locks when fingerprints change."""
     folder = STATE / "venvs" / name
     python = folder / "Scripts/python.exe"
     fingerprint = hashlib.sha256(
@@ -201,10 +206,10 @@ def prepare_python(uv: str, name: str, project: Path, base: dict) -> Path:
 
 
 def prepare_webui_python(uv: str, base: dict) -> Path:
-    """按锁定的精简依赖清单同步 Open WebUI 的虚拟环境并执行 uv pip check，依赖指纹未变则跳过，返回其 python.exe。"""
+    """Sync the locked slim WebUI environment and check dependency consistency when changed."""
     folder = STATE / "venvs/webui"
     python = folder / "Scripts/python.exe"
-    # 使用上游的精简依赖集：所有 AI/文档处理都委托给其他服务。
+    # Use upstream slim dependencies because other services own AI and document processing.
     requirements = locked_webui_requirements(ROOT)
     target = STATE / "webui-requirements.txt"
     target.write_text(requirements, encoding="utf-8")
@@ -221,7 +226,7 @@ def prepare_webui_python(uv: str, base: dict) -> Path:
 
 
 def prepare_frontend(node: Path, base: dict) -> None:
-    """锁文件变化时重装前端依赖，安装阶段禁用包的生命周期脚本。"""
+    """Install frontend dependencies only when locks change, with lifecycle scripts disabled."""
     project = ROOT / "webui"
     fingerprint = sha256(project / "package-lock.json")
     stamp = project / "node_modules/.nexrag-dependencies"
@@ -243,13 +248,13 @@ def prepare_frontend(node: Path, base: dict) -> None:
             cwd=project,
             env=env,
         )
-        # 浏览器代码解释器已禁用，因此不下载其体积庞大的可选运行时。
+        # The browser interpreter is disabled, so skip its large optional runtime download.
         stamp.write_text(fingerprint)
 
 
 def prepare_business_data(base: dict, python: Path) -> None:
-    """仅在使用内置 Olist 示例配置且尚无业务数据库时，获取并导入示例数据；自定义配置或已有数据一律不动。"""
-    # 只引导内置示例；自定义配置/数据绝不会被替换。
+    """Bootstrap Olist only for unchanged built-in example configuration without existing data."""
+    # Bootstrap only built-in examples; never replace custom configuration or data.
     if (
         base.get("BUSINESS_SOURCE_PATH", "examples/olist/business-source.yaml").replace("\\", "/")
         != "examples/olist/business-source.yaml"
@@ -273,17 +278,19 @@ def prepare_business_data(base: dict, python: Path) -> None:
 
 
 class Supervisor(native_processes.Supervisor):
-    """保持入口 API 不变，而进程生命周期的实现放在别处。"""
+    """Preserve the launcher API while delegating process lifecycle implementation."""
 
     def __init__(self) -> None:
         super().__init__(STATE, say)
 
 
 def ollama_cloud_disabled(endpoint: str, opener=None) -> bool:
+    """Verify the server explicitly reports cloud inference disabled."""
     return native_ollama.ollama_cloud_disabled(endpoint, opener)
 
 
 def prepare_ollama(base: dict, supervisor: Supervisor, skip_models: bool) -> None:
+    """Verify local-only inference and prepare the configured Ollama models."""
     native_ollama.prepare_ollama(
         base,
         supervisor,
@@ -299,7 +306,7 @@ def prepare_ollama(base: dict, supervisor: Supervisor, skip_models: bool) -> Non
 
 @contextlib.contextmanager
 def launcher_lock():
-    """进程崩溃时由操作系统释放该锁；残留的 PID 文件不会阻止其他进程。"""
+    """Use an OS-released lock so stale PID files cannot block launches after crashes."""
     import msvcrt
 
     path = STATE / "launcher.lock"
@@ -322,7 +329,7 @@ def launcher_lock():
 
 
 def _prepare_runtime(args: argparse.Namespace, base: dict) -> tuple[Path, dict[str, Path], Path]:
-    """准备 Node、各 Python 环境、前端依赖、Qdrant 与示例数据，返回 (node, pythons, qdrant)。"""
+    """Prepare tools, Python environments, frontend dependencies, Qdrant, and sample data."""
     say("Preparing local runtime. The first run downloads dependencies; later starts reuse them.")
     if not shutil.which("git"):
         raise RuntimeError("Git is required to prepare the pinned Open WebUI source checkout.")
@@ -355,7 +362,7 @@ def _prepare_runtime(args: argparse.Namespace, base: dict) -> tuple[Path, dict[s
 
 
 def _write_runtime_state(runtime_file: Path, status: str, ports: dict[str, int]) -> None:
-    """把当前启动阶段与端口写入 runtime.json，供外部查询访问地址。"""
+    """Write launch phase and ports for external runtime-address discovery."""
     runtime_file.write_text(
         json.dumps({"status": status, "url": url(ports["web"]), "ports": ports}, indent=2),
         encoding="utf-8",
@@ -363,7 +370,7 @@ def _write_runtime_state(runtime_file: Path, status: str, ports: dict[str, int])
 
 
 def _start_qdrant(supervisor: Supervisor, base: dict, ports: dict[str, int], qdrant: Path) -> None:
-    """启动受管 Qdrant 并等待其就绪。"""
+    """Start owned Qdrant and wait until ready."""
     qdrant_env = native_environment.qdrant_environment(base, ports, ROOT)
     supervisor.start("qdrant", [qdrant], qdrant.parent, qdrant_env)
     supervisor.wait_http({"qdrant": url(ports["qdrant"]) + "/readyz"}, timeout=90)
@@ -375,7 +382,7 @@ def _start_backends(
     ports: dict[str, int],
     environments: dict[str, dict],
 ) -> None:
-    """依次启动 nexrag、webui、ingestion、retrieval 四个 uvicorn 后端。"""
+    """Start the NexRAG, WebUI, ingestion, and retrieval backends in order."""
     for name, module, cwd in [
         ("nexrag", "src.main:app", ROOT),
         ("webui", "open_webui.main:app", ROOT / "webui/backend"),
@@ -402,7 +409,7 @@ def _start_backends(
 def _start_frontend(
     supervisor: Supervisor, node: Path, ports: dict[str, int], environments: dict[str, dict]
 ) -> None:
-    """用 vite 启动浏览器界面，端口被占用时直接失败。"""
+    """Start Vite, failing if its port is already occupied."""
     supervisor.start(
         "frontend",
         [
@@ -426,7 +433,7 @@ def _serve_until_stopped(
     ports: dict[str, int],
     runtime_file: Path,
 ) -> None:
-    """等待界面、数据服务依次就绪并更新运行状态，之后持续监管子进程。"""
+    """Wait for services, update state, then supervise child processes."""
     supervisor.wait_http(
         {
             "nexrag": url(ports["nexrag"]) + "/health",
@@ -462,7 +469,7 @@ def _serve_until_stopped(
 
 
 def launch(args: argparse.Namespace) -> None:
-    """准备运行环境后依次启动 Ollama、Qdrant、各后端与前端并监管；退出时停止本次启动的服务并把状态写为 stopped。--prepare-only 时只准备不启动。"""
+    """Prepare and supervise the stack, stopping only owned services; prepare-only starts nothing."""
     base = prepare_environment()
     node, pythons, qdrant = _prepare_runtime(args, base)
     if args.prepare_only:
@@ -472,8 +479,8 @@ def launch(args: argparse.Namespace) -> None:
     supervisor = Supervisor()
     runtime_file = STATE / "runtime.json"
     try:
-        # 先证明推理仅在本地，再启动任何可能把文档文本发给 embedding、
-        # 或把业务证据发给对话模型的服务。
+        # Prove inference stays local before starting services that may send document text
+        # to embeddings or business evidence to chat models.
         prepare_ollama(base, supervisor, args.skip_models)
         environments = service_environments(base, ports)
         _write_runtime_state(runtime_file, "starting", ports)
@@ -491,7 +498,7 @@ def launch(args: argparse.Namespace) -> None:
 
 
 def main() -> int:
-    """命令行入口：仅支持 Windows x64，在启动锁保护下调用 launch；成功或被中断返回 0，启动失败返回 1。"""
+    """Run the Windows x64 launcher under its lock; return zero on success or interruption."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--uv", default="uv")
     parser.add_argument("--no-browser", action="store_true")

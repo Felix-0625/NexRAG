@@ -1,4 +1,4 @@
-"""仅有来源引用，不能让报告漏掉被要求的政策字段。"""
+"""Source citations alone cannot excuse missing requested policy fields."""
 
 from src.agent.grounding import EvidenceLedger
 from src.agent.report_evidence import append_report_sources

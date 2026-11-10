@@ -1,7 +1,7 @@
-"""基于运维方持有的业务数据源配置，执行租户范围内的分析。
+"""Tenant-scoped analysis from operator-owned source configuration.
 
-每个已配置的源 SELECT 必须暴露 ``__tenant_id``。适配器先套用所选租户的谓词，
-再把行复制到私有只读分析库；用户 SQL 绝不在源连接上执行。
+Every source SELECT exposes __tenant_id. Filter by tenant before copying to a private
+read-only analysis database; never execute user SQL on source connections.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ SQLITE_TYPES = frozenset({"TEXT", "INTEGER", "REAL", "NUMERIC", "BLOB"})
 
 @dataclass(frozen=True)
 class ViewSpec:
-    """单个视图对外公开的分析列，以及受信任的源 SELECT。"""
+    """Public analytical columns and trusted source SELECT for one view."""
 
     columns: dict[str, str]
     source_sql: str
@@ -37,7 +37,7 @@ class ViewSpec:
 
 @dataclass(frozen=True)
 class SQLiteSourceProfile:
-    """已校验的 SQLite 数据源及其租户范围内的公开视图。"""
+    """Validated SQLite source with tenant-scoped public views."""
 
     database_path: Path
     tenant_exists_sql: str | None
@@ -46,7 +46,7 @@ class SQLiteSourceProfile:
 
 @dataclass(frozen=True)
 class PostgreSQLSourceProfile:
-    """已校验的 PostgreSQL 数据源；凭据来自环境变量。"""
+    """Validated PostgreSQL source with environment-supplied credentials."""
 
     database_dsn: str = field(repr=False)
     tenant_exists_sql: str | None
@@ -54,7 +54,7 @@ class PostgreSQLSourceProfile:
 
 
 def _read_profile(profile_path: Path) -> tuple[dict, str]:
-    """读取配置文件并校验数据源类型，返回原始配置和类型。"""
+    """Read source configuration and validate its type."""
     if not profile_path.is_file():
         raise FileNotFoundError(profile_path)
     raw = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
@@ -65,7 +65,7 @@ def _read_profile(profile_path: Path) -> tuple[dict, str]:
 
 
 def _resolve_sqlite_path(raw: dict, profile_path: Path, db_path_override) -> Path:
-    """确定 SQLite 数据库路径：显式覆盖优先，相对路径以配置文件目录为基准。"""
+    """Resolve SQLite paths using explicit overrides or the configuration directory."""
     database_name = db_path_override or raw.get("database_path")
     if not isinstance(database_name, (str, Path)) or not str(database_name):
         raise ValueError("Business source database_path is required")
@@ -78,7 +78,7 @@ def _resolve_sqlite_path(raw: dict, profile_path: Path, db_path_override) -> Pat
 
 
 def _parse_view(name, configured, source_type: str, dialect: str) -> ViewSpec:
-    """校验单个视图的列、源 SELECT、主键和粒度，生成 ViewSpec。"""
+    """Validate view columns, source SQL, keys, and grain into a ViewSpec."""
     if not isinstance(name, str) or not IDENTIFIER.fullmatch(name):
         raise ValueError(f"Invalid business view name: {name!r}")
     if not isinstance(configured, dict) or not isinstance(configured.get("columns"), dict):
@@ -123,14 +123,14 @@ def _parse_view(name, configured, source_type: str, dialect: str) -> ViewSpec:
 
 
 def _parse_tenant_exists_sql(raw: dict, source_type: str, dialect: str) -> str | None:
-    """校验租户存在性查询必须恰好含一个租户参数，并通过 SQL 安全检查。"""
+    """Require one tenant placeholder and validate the tenant-existence query."""
     tenant_exists_sql = raw.get("tenant_exists_sql")
     if tenant_exists_sql is not None:
         placeholder = "?" if source_type == "sqlite" else "%s"
         if not isinstance(tenant_exists_sql, str) or tenant_exists_sql.count(placeholder) != 1:
             raise ValueError("tenant_exists_sql must contain exactly one tenant parameter")
-        # SQLGlot 校验时用字面量替代驱动占位符；
-        # 原始查询仍保留参数绑定。
+        # Substitute literals for driver placeholders only during SQLGlot validation;
+        # retain parameter binding in the original query.
         SQLSafetyGuard.validate(
             tenant_exists_sql.replace(placeholder, "NULL"),
             allowed_tables=None,
@@ -147,7 +147,7 @@ def load_source_profile(
     db_path_override: str | Path | None = None,
     db_dsn_override: str | None = None,
 ) -> SQLiteSourceProfile | PostgreSQLSourceProfile:
-    """加载受信任的部署配置，并拒绝格式错误的定义。"""
+    """Load trusted deployment configuration and reject malformed definitions."""
     profile_path = Path(path).resolve()
     raw, source_type = _read_profile(profile_path)
     dialect = "postgres" if source_type == "postgresql" else "sqlite"
@@ -174,7 +174,7 @@ def load_source_profile(
 def _populate_view(
     sandbox: sqlite3.Connection, name: str, view: ViewSpec, source_rows: Iterable[tuple]
 ) -> None:
-    """仅把经租户过滤的源数据行复制到共享的 SQLite 沙箱。"""
+    """Copy tenant-filtered source rows into the SQLite sandbox."""
     schema = ", ".join(
         f'"{column}" {kind}' + (" NOT NULL" if column in view.primary_key else "")
         for column, kind in view.columns.items()
@@ -185,9 +185,10 @@ def _populate_view(
     placeholders = ", ".join("?" for _ in view.columns)
 
     def adapted_rows():
+        """Convert source objects into SQLite-compatible row values."""
         for row in source_rows:
-            # PostgreSQL 驱动把日期、UUID、Decimal 暴露为 Python 对象；
-            # SQLite 在列亲和性下接受它们的字符串形式。
+            # PostgreSQL exposes dates, UUIDs, and Decimals as Python objects;
+            # SQLite column affinity accepts their string forms.
             yield tuple(
                 value
                 if value is None or isinstance(value, (str, int, float, bytes))
@@ -199,10 +200,9 @@ def _populate_view(
 
 
 class SQLiteAdapter:
-    """在已配置视图的租户过滤副本上执行有界 SQL。
+    """Execute bounded SQL on tenant-filtered view copies.
 
-    ``tenant_id`` 必须来自已认证且已授权的调用方；仅凭浏览器端的选择
-    不能证明有权访问数据库。
+    Require an authenticated, authorized tenant ID; browser selection alone proves no access.
     """
 
     def __init__(
@@ -222,7 +222,7 @@ class SQLiteAdapter:
     def execute_query(
         self, sql: str, tenant_id: str, *, max_rows: int = 100, timeout_seconds: float = 2.0
     ) -> list[dict[str, Any]]:
-        """Agent 轮次之外的便捷读取：每次取一份全新的源快照。"""
+        """Read a fresh snapshot for a standalone query outside an agent turn."""
         safe_sql = validate_query(sql, self.profile.views, max_rows, timeout_seconds)
         with self.open_snapshot(tenant_id) as snapshot:
             return snapshot.execute_query(
@@ -230,7 +230,7 @@ class SQLiteAdapter:
             )
 
     def open_snapshot(self, tenant_id: str) -> AnalysisSnapshot:
-        """在同一个读事务中复制所有选中的视图，随后关闭数据源。"""
+        """Copy selected views in one read transaction, then close the source."""
         if not tenant_id:
             raise ValueError("A validated tenant ID is required")
 
@@ -267,7 +267,7 @@ class SQLiteAdapter:
 
 
 class PostgreSQLAdapter:
-    """把已授权的 PostgreSQL 行复制到现有的 SQLite SQL 沙箱。"""
+    """Copy authorized PostgreSQL rows into the existing SQLite query sandbox."""
 
     def __init__(self, *, profile: PostgreSQLSourceProfile):
         self.profile = profile
@@ -275,7 +275,7 @@ class PostgreSQLAdapter:
     def execute_query(
         self, sql: str, tenant_id: str, *, max_rows: int = 100, timeout_seconds: float = 2.0
     ) -> list[dict[str, Any]]:
-        """Agent 轮次之外的便捷读取：每次取一份全新的源快照。"""
+        """Read a fresh snapshot for a standalone query outside an agent turn."""
         safe_sql = validate_query(sql, self.profile.views, max_rows, timeout_seconds)
         with self.open_snapshot(tenant_id) as snapshot:
             return snapshot.execute_query(
@@ -283,7 +283,7 @@ class PostgreSQLAdapter:
             )
 
     def open_snapshot(self, tenant_id: str) -> AnalysisSnapshot:
-        """使用专用只读凭据，在 REPEATABLE READ 隔离级别下读取租户副本。"""
+        """Read tenant copies under REPEATABLE READ with dedicated read-only credentials."""
         if not tenant_id:
             raise ValueError("A validated tenant ID is required")
 
@@ -323,7 +323,7 @@ class PostgreSQLAdapter:
 def create_business_adapter(
     db_path: str | Path | None = None, *, profile_path: str | Path | None = None
 ) -> SQLiteAdapter | PostgreSQLAdapter:
-    """选择数据源连接器，同时保持统一受管控的查询接口。"""
+    """Choose a connector while preserving the shared governed-query interface."""
     from src.midplatform.workspace import active_connection
 
     active = active_connection() if profile_path is None else None

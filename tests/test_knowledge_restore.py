@@ -1,4 +1,4 @@
-"""在真实的异步 SQLite 事务和本地文件上运行已发布的恢复流程。"""
+"""Exercise the shipped restore flow with real async SQLite transactions and local files."""
 
 import ast
 import asyncio
@@ -22,6 +22,7 @@ from sqlalchemy.orm import declarative_base
 
 
 def load_shipped(path, namespace, classes=None):
+    """Load shipped."""
     tree = ast.parse(Path(path).read_text(encoding="utf8"))
     tree.body = [
         node
@@ -34,13 +35,8 @@ def load_shipped(path, namespace, classes=None):
 
 @pytest.fixture
 def restore_store(tmp_path):
-    schema = {**vars(sa), "Base": declarative_base()}
-    load_shipped("webui/backend/open_webui/models/files.py", schema, {"File"})
-    load_shipped(
-        "webui/backend/open_webui/models/knowledge.py",
-        schema,
-        {"Knowledge", "KnowledgeFile", "KnowledgeDirectory"},
-    )
+    """Provide a published revision and a newer live version for restore tests."""
+    schema = _restore_schema()
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'metadata.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     File, Knowledge, Link = (schema[name] for name in ("File", "Knowledge", "KnowledgeFile"))
@@ -50,14 +46,17 @@ def restore_store(tmp_path):
 
     @asynccontextmanager
     async def database():
+        """Database."""
         async with sessions() as session:
             yield session
 
     async def knowledge(identifier):
+        """Knowledge."""
         async with sessions() as session:
             return await session.get(Knowledge, identifier)
 
     async def files(identifier):
+        """Files."""
         async with sessions() as session:
             return list(
                 (
@@ -69,53 +68,15 @@ def restore_store(tmp_path):
                 ).all()
             )
 
-    async def seed():
-        async with engine.begin() as connection:
-            await connection.run_sync(schema["Base"].metadata.create_all)
-        async with sessions.begin() as session:
-            session.add(
-                Knowledge(id="kb", user_id="owner", name="V1", description="synthetic", meta=policy)
-            )
-            session.add(
-                File(
-                    id="original",
-                    user_id="owner",
-                    filename="policy.txt",
-                    path=str(live_path),
-                    data={"content": "VERSION_ONE_671"},
-                )
-            )
-            session.add(
-                Link(
-                    id="original-link",
-                    knowledge_id="kb",
-                    file_id="original",
-                    user_id="owner",
-                    created_at=1,
-                    updated_at=1,
-                )
-            )
-
-    class Storage:
-        get_file = staticmethod(str)
-
-        @staticmethod
-        def upload_file(stream, name, tags):
-            body = stream.read()
-            path = tmp_path / name
-            path.write_bytes(body)
-            return body, str(path)
-
-        @staticmethod
-        def delete_file(path):
-            Path(path).unlink()
-
+    Storage = _restore_storage(tmp_path)
     indexed, removed = {}, []
 
     def index(path, filename, file_id, generation, owner):
+        """Index."""
         indexed[(generation, file_id)] = Path(path).read_text(encoding="utf8")
 
     def remove(file_id, generation):
+        """Remove."""
         removed.append((generation, file_id))
         indexed.pop((generation, file_id), None)
 
@@ -151,18 +112,7 @@ def restore_store(tmp_path):
     )
     load_shipped("webui/backend/open_webui/utils/nexrag_restore.py", ns)
 
-    async def prepare():
-        await seed()
-        revision = await ns["record_revision"]("kb", "owner", "published V1", force=True)
-        live_path.write_text("VERSION_TWO_982", encoding="utf8")
-        async with sessions.begin() as session:
-            current = await session.get(Knowledge, "kb")
-            current.name = "V2"
-            document = await session.get(File, "original")
-            document.data = {"content": "VERSION_TWO_982"}
-        return revision
-
-    revision = asyncio.run(prepare())
+    revision = asyncio.run(_prepare_live_revision(engine, sessions, schema, live_path, policy, ns))
     yield SimpleNamespace(
         ns=ns,
         sessions=sessions,
@@ -177,9 +127,11 @@ def restore_store(tmp_path):
 
 
 def test_restore_publishes_files_index_and_audit_together_without_restoring_acl(restore_store):
+    """Test restore publishes files index and audit together without restoring acl."""
     store = restore_store
 
     async def run():
+        """Run."""
         before = await store.ns["Knowledges"].get_knowledge_by_id("kb")
         result = await store.ns["restore_revision"](
             before, store.revision, SimpleNamespace(id="owner")
@@ -207,22 +159,26 @@ def test_restore_publishes_files_index_and_audit_together_without_restoring_acl(
 def test_restore_failure_keeps_live_content_and_relations_and_cleans_staging(
     restore_store, failure
 ):
+    """Test restore failure keeps live content and relations and cleans staging."""
     store = restore_store
     if failure == "index":
 
         def reject(*args):
+            """Reject."""
             raise RuntimeError("injected indexing failure")
 
         store.ns["index_document"] = reject
     else:
 
         def reject(mapper, connection, target):
+            """Reject."""
             if target.id != "original-link":
                 raise RuntimeError("injected final transaction failure")
 
         sa.event.listen(store.schema["KnowledgeFile"], "before_insert", reject)
 
     async def run():
+        """Run."""
         before = await store.ns["Knowledges"].get_knowledge_by_id("kb")
         with pytest.raises(RuntimeError, match="injected"):
             await store.ns["restore_revision"](before, store.revision, SimpleNamespace(id="owner"))
@@ -242,9 +198,11 @@ def test_restore_failure_keeps_live_content_and_relations_and_cleans_staging(
 
 
 def test_non_owner_cannot_restore_or_stage_files(restore_store):
+    """Test non owner cannot restore or stage files."""
     store = restore_store
 
     async def run():
+        """Run."""
         before = await store.ns["Knowledges"].get_knowledge_by_id("kb")
         with pytest.raises(HTTPException) as error:
             await store.ns["restore_revision"](before, store.revision, SimpleNamespace(id="admin"))
@@ -252,3 +210,77 @@ def test_non_owner_cannot_restore_or_stage_files(restore_store):
         assert not store.indexed and not store.removed
 
     asyncio.run(run())
+
+
+async def _seed_restore_store(engine, sessions, schema, live_path, policy):
+    File, Knowledge, Link = (schema[name] for name in ("File", "Knowledge", "KnowledgeFile"))
+    async with engine.begin() as connection:
+        await connection.run_sync(schema["Base"].metadata.create_all)
+    async with sessions.begin() as session:
+        session.add(
+            Knowledge(id="kb", user_id="owner", name="V1", description="synthetic", meta=policy)
+        )
+        session.add(
+            File(
+                id="original",
+                user_id="owner",
+                filename="policy.txt",
+                path=str(live_path),
+                data={"content": "VERSION_ONE_671"},
+            )
+        )
+        session.add(
+            Link(
+                id="original-link",
+                knowledge_id="kb",
+                file_id="original",
+                user_id="owner",
+                created_at=1,
+                updated_at=1,
+            )
+        )
+
+
+def _restore_storage(tmp_path):
+    class Storage:
+        get_file = staticmethod(str)
+
+        @staticmethod
+        def upload_file(stream, name, tags):
+            """Upload file."""
+            body = stream.read()
+            path = tmp_path / name
+            path.write_bytes(body)
+            return body, str(path)
+
+        @staticmethod
+        def delete_file(path):
+            """Delete file."""
+            Path(path).unlink()
+
+    return Storage
+
+
+def _restore_schema():
+    schema = {**vars(sa), "Base": declarative_base()}
+    load_shipped("webui/backend/open_webui/models/files.py", schema, {"File"})
+    load_shipped(
+        "webui/backend/open_webui/models/knowledge.py",
+        schema,
+        {"Knowledge", "KnowledgeFile", "KnowledgeDirectory"},
+    )
+    return schema
+
+
+async def _prepare_live_revision(engine, sessions, schema, live_path, policy, ns):
+    File, Knowledge = schema["File"], schema["Knowledge"]
+    """Prepare."""
+    await _seed_restore_store(engine, sessions, schema, live_path, policy)
+    revision = await ns["record_revision"]("kb", "owner", "published V1", force=True)
+    live_path.write_text("VERSION_TWO_982", encoding="utf8")
+    async with sessions.begin() as session:
+        current = await session.get(Knowledge, "kb")
+        current.name = "V2"
+        document = await session.get(File, "original")
+        document.data = {"content": "VERSION_TWO_982"}
+    return revision

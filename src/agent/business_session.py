@@ -1,7 +1,7 @@
-"""每个生产/评测轮次一个受治理的业务快照，绝不按用户共享。
+"""Own one governed business snapshot per production or evaluation turn, never per user.
 
-ContextVar 会传播到 asyncio 工作线程，无需全局租户缓存。对象本身加锁，因为 PydanticAI 可能并行运行互相独立的工具；
-正常输出、拒绝、失败和超时时都会关闭所有资源。
+ContextVar propagation reaches asyncio worker threads without a global tenant cache. Lock
+shared access because tools may run concurrently; close resources on every exit path.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ _current: ContextVar[BusinessReadSession | None] = ContextVar("business_read_ses
 
 
 class BusinessReadSession:
-    """串行保护本轮共享的只读快照，供并发工具复用，不能跨轮次缓存。"""
+    """Serialize concurrent tools over a turn-local read-only snapshot that cannot span turns."""
 
     def __init__(self):
         self._lock = threading.RLock()
@@ -24,7 +24,9 @@ class BusinessReadSession:
         self._closed = False
 
     def read(self, sql, tenant_id, db_path=None, *, adapter=None, max_rows=50):
-        """在本轮唯一的快照上执行只读查询；先校验 SQL，轮次结束后拒绝，且本轮不得更换业务数据源。"""
+        """Validate SQL before reading the turn's sole snapshot; reject closed turns or source
+        changes.
+        """
         from src.midplatform.adapters import create_business_adapter
 
         with self._lock:
@@ -34,7 +36,7 @@ class BusinessReadSession:
                 self.adapter = adapter or create_business_adapter(db_path)
             elif adapter is not None and adapter is not self.adapter:
                 raise ValueError("A turn cannot replace its business source")
-            # 首次请求也要先校验，再打开/复制数据源。
+            # Validate even the first query before opening or copying the source.
             from src.midplatform.analysis_snapshot import validate_query
 
             validate_query(sql, self.adapter.profile.views, max_rows)
@@ -51,7 +53,7 @@ class BusinessReadSession:
             }
 
     def close(self):
-        """标记本轮已结束并关闭快照；此后的查询都会被拒绝。"""
+        """End this turn and close its snapshot so subsequent queries are refused."""
         with self._lock:
             self._closed = True
             if self.snapshot is not None:
@@ -59,18 +61,20 @@ class BusinessReadSession:
 
 
 def current_business_session():
-    """取当前异步上下文的业务会话；轮次外返回 None。"""
+    """Return the current async context's business session, or None outside a turn."""
     return _current.get()
 
 
 @asynccontextmanager
 async def business_read_session():
-    """为一个轮次创建并登记独立的业务读取会话；退出时在工作线程中关闭，不阻塞事件循环。"""
+    """Register a turn-local session and close it in a worker thread without blocking the event
+    loop.
+    """
     session = BusinessReadSession()
     token = _current.set(session)
     try:
         yield session
     finally:
         _current.reset(token)
-        # 已取消的 to_thread 查询可能仍在收尾；等待其快照锁和资源清理时不要阻塞事件循环。
+        # A cancelled to_thread query may still hold the snapshot lock; cleanup must not block the loop.
         await asyncio.to_thread(session.close)

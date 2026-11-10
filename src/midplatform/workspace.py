@@ -1,4 +1,4 @@
-"""本地工作区设置，以及由管理员管控的业务连接。"""
+"""Local settings and administrator-governed business connections."""
 
 from __future__ import annotations
 
@@ -21,28 +21,25 @@ IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def get_setting(key: str, default=None):
-    """读取工作区设置（JSON 反序列化）；键不存在时返回 default。"""
+    """Read a decoded setting, returning default if absent."""
     row = get_ops_store().query_one("SELECT value FROM workspace_settings WHERE key=?", (key,))
     return json.loads(row["value"]) if row else default
 
 
 def set_setting(key: str, value: Any) -> None:
-    """以 JSON 形式写入（或覆盖）一项工作区设置。"""
+    """Write or replace a JSON workspace setting."""
     get_ops_store().execute(
         "INSERT OR REPLACE INTO workspace_settings VALUES (?,?)", (key, dumps(value))
     )
 
 
 def export_root() -> Path:
-    """返回导出文件根目录：优先用管理员绑定的目录，否则用配置的 EXPORTS_DIR，并解析为绝对路径。"""
+    """Resolve the export root, preferring the administrator-bound folder."""
     return Path(get_setting("exports_dir", settings.EXPORTS_DIR)).expanduser().resolve()
 
 
 def bind_export_root(folder: str) -> str:
-    """绑定导出根目录并返回其绝对路径。
-
-    只接受绝对路径；目录不存在时创建，并先试写一个临时文件确认可写，否则抛出 ValueError 或 OSError。
-    """
+    """Bind an absolute export root after creating it and probing writability."""
     if not folder.strip():
         raise ValueError("请选择产物文件夹")
     target = Path(folder).expanduser()
@@ -57,7 +54,7 @@ def bind_export_root(folder: str) -> str:
 
 
 def pick_folder() -> str | None:
-    """在本机（仅 Windows）弹出系统文件夹选择框，返回所选路径；用户取消时返回 None，其他平台或失败抛出 ValueError。"""
+    """Open the Windows folder picker, returning None on cancellation."""
     if sys.platform != "win32":
         raise ValueError("当前平台请直接填写本机文件夹绝对路径")
     script = """
@@ -90,7 +87,7 @@ $owner.Dispose()
 
 
 def discover(kind: str, address: str) -> list[dict]:
-    """用只读连接检查结构；绝不创建缺失的 SQLite 数据库。"""
+    """Inspect schemas read-only without creating missing SQLite files."""
     if kind == "sqlite":
         path = Path(address).expanduser().resolve()
         if not path.is_file():
@@ -152,7 +149,9 @@ def discover(kind: str, address: str) -> list[dict]:
 
 
 def active_connection() -> dict | None:
-    """返回当前生效的业务数据连接记录（含完整配置，其中可能含 DSN）；使用默认数据时返回 None。仅限服务端内部使用。"""
+    """Return the full active connection internally, possibly with secrets, or None for default
+    data.
+    """
     identifier = get_setting("active_connection")
     row = (
         get_ops_store().query_one("SELECT * FROM business_connections WHERE id=?", (identifier,))
@@ -163,7 +162,7 @@ def active_connection() -> dict | None:
 
 
 def public_connections() -> list[dict]:
-    """返回连接的公开清单（默认数据在最前），只含 id、名称、类型和是否生效，不含地址或凭据。"""
+    """List public connections with defaults first and no addresses or credentials."""
     active = get_setting("active_connection")
     rows = get_ops_store().query(
         "SELECT id,name,kind,created_at FROM business_connections ORDER BY created_at DESC"
@@ -174,9 +173,9 @@ def public_connections() -> list[dict]:
 
 
 def save_connection(name: str, kind: str, address: str, selected: list[dict]) -> dict:
-    """登记业务数据连接：对所选 1 至 30 张表按源库实际结构生成带租户字段的视图和元数据，主键取自源库而非客户端。
+    """Register selected tables using discovered fields and source primary keys.
 
-    表或租户字段与源库结构不符时抛出 ValueError；新连接不会自动生效，返回其公开信息。
+    Reject source-schema mismatches, do not activate automatically, and return a public view.
     """
     structure = {table["name"]: table for table in discover(kind, address)}
     if not selected or len(selected) > 30:
@@ -205,8 +204,8 @@ def save_connection(name: str, kind: str, address: str, selected: list[dict]) ->
         views[name_in_db] = {
             "columns": public_columns,
             "source_sql": f'SELECT "{tenant}" AS __tenant_id, {fields} FROM {source}',
-            # 绝不采信客户端声称的键。去发现源库真实的约束，
-            # 并在租户快照中再次强制执行。
+            # Never trust client-declared keys: discover source constraints
+            # and enforce them again inside tenant snapshots.
             "primary_key": discovered.get("primary_key", []),
             "grain": name_in_db,
         }

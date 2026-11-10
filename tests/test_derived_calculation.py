@@ -1,4 +1,4 @@
-"""推导出的金额类结论，需要有经核实的依据、比率和精确计算。"""
+"""Derived amounts require verified bases, rates, and exact calculations."""
 
 import asyncio
 from unittest.mock import Mock
@@ -20,6 +20,7 @@ from src.midplatform.data_policy import save_account_policy
 
 
 def ledger():
+    """Build an evidence ledger for the scenario."""
     evidence = EvidenceLedger(
         required={"db", "kb", CALCULATION}, prompt="查询订单金额，按制度计算优惠金额和折后金额"
     )
@@ -31,6 +32,7 @@ def ledger():
 
 
 def quote(evidence, amount=2000, rate=6, **kwargs):
+    """Provide quote test data or behavior for this scenario."""
     result, binding = bind_discount_quote(evidence.entries, evidence.prompt, amount, rate, **kwargs)
     evidence.add(
         "tool", result, tool_id=DISCOUNT_TOOL_ID, calculation_type=CALCULATION, binding=binding
@@ -107,7 +109,7 @@ def test_ready_quote_phase_excludes_repeated_reads_but_requires_actual_calculato
     prepared = asyncio.run(prepare_business_tools(context, definitions))
     assert [tool.name for tool in prepared] == ["calculate_discount_quote"]
     assert evidence.missing() == {CALCULATION}
-    # 没有权限时，既不虚构工具，也不伪造成功结果。
+    # Without permission, neither invent the tool nor fabricate success.
     assert asyncio.run(prepare_business_tools(context, definitions[:2])) == definitions[:2]
     evidence.add("kb", [{"content": "另一制度折扣上限8%。"}])
     assert asyncio.run(prepare_business_tools(context, definitions)) == definitions
@@ -325,6 +327,7 @@ def test_fallback_has_partial_trace_status_and_no_completed_task(monkeypatch):
     runner._agent = Mock()
 
     async def model(*a, **kw):
+        """Provide deterministic model responses for this scenario."""
         kw["deps"].ledger.add("db", [{"amount": 2000}], sql="SELECT amount FROM sales")
         raise TimeoutError()
 

@@ -1,6 +1,7 @@
-"""基于本轮实际工具证据，对任务完成度与数字做确定性检查。
+"""Deterministically check task completion and numbers against this turn's tool evidence.
 
-这不是语义真值判官：缺失的能力一律按失败处理；数值声明和常见合计必须有工具数据支撑，而不是靠模型记忆。
+This is not a semantic truth oracle: missing capabilities fail closed, and numeric claims
+and common totals require tool data rather than model memory.
 """
 
 from __future__ import annotations
@@ -12,17 +13,19 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.agent.task_intent import (
-    database_write_request,  # noqa: F401 - 稳定的公开导入
-    requested_capabilities,  # noqa: F401 - 稳定的公开导入
+    database_write_request,  # noqa: F401 - Stable public re-export.
+    requested_capabilities,  # noqa: F401 - Stable public re-export.
 )
 
 
 class GroundingFailure(ValueError):
+    """Report an answer that cannot be supported by the current evidence."""
+
     pass
 
 
 def _returned_links(value):
-    """成功证据中的精确 URL 字段，而不是其他 URL 的前缀。"""
+    """Collect exact URLs from successful evidence, not prefixes of unrelated URLs."""
     if isinstance(value, str):
         return {value} if value.startswith(("https://", "http://", "/api/")) else set()
     if isinstance(value, dict):
@@ -43,12 +46,12 @@ def _numbers(text: str) -> set[Decimal]:
 
 
 def _plain(text: str) -> str:
-    # Markdown 序号只表示排版，不是事实：仅去掉列表标记，条目正文里的数字仍需证据支撑。
+    # List markers are layout, not facts; numbers inside list items still require evidence.
     text = re.sub(r"(?m)^\s{0,3}\d+[.)]\s+", "", text)
     text = re.sub(r"\]\([^)]*\)", "]", text)
     text = re.sub(r"https?://\S+|/api/\S+", "", text)
     text = re.sub(r"\[(?:DB|KB|TOOL|FILE|WEB)\d+\]", "", text)
-    # 只豁免 SQL 来源；把数字/记录 ID 写成行内代码或 CSV/JSON 块，不能绕过证据检查。
+    # Exempt only SQL sources; inline code and CSV or JSON blocks cannot bypass numeric grounding.
     text = re.sub(r"```sql\b.*?```|`\s*SELECT\b[^`]+`", "", text, flags=re.S | re.I)
     text = re.sub(r"[\w.-]+\.(?:csv|md|json|txt|pdf|docx)", "", text)
     return text.replace("`", "")
@@ -138,13 +141,13 @@ def _details_hint(missing):
 
 
 def _add_result_row_count(counts, rows, shape, required, mixed_grains):
-    """未截断且保持行粒度的明细结果，其行数可作为计数证据。"""
+    """Use complete, row-preserving detail results as count evidence."""
     if (
         shape.get("row_preserving")
         and not shape.get("limited")
         and not shape.get("join_cardinality")
         and not mixed_grains
-        # 商品/明细视图不能证明订单数量，即使它恰好是唯一成功的查询。
+        # Item-level views cannot prove order counts, even if they are the only successful query.
         and not (
             "db_count" in required
             and shape.get("grain") is not None
@@ -155,8 +158,8 @@ def _add_result_row_count(counts, rows, shape, required, mixed_grains):
 
 
 def _add_distinct_order_counts(counts, rows, shape, prompt):
-    # 只有显式要求的去重订单数，才可由返回连接结果中完整的强制订单键推导；
-    # 它不能证明全部源订单（例如没有明细的订单）。
+    # Derive an explicitly requested distinct order count only from complete enforced join keys;
+    # this cannot prove all source orders, including those without details.
     if re.search(r"不同订单数|去重.*订单数|distinct.{0,20}order", prompt, re.I):
         for keys in shape.get("distinct_order_keys", ()):
             counts.add(
@@ -173,9 +176,9 @@ def _add_distinct_order_counts(counts, rows, shape, prompt):
 
 
 def _add_column_stats(counts, sums, rows, shape, mixed_grains):
-    """逐列判断数值列是否可作为计数或金额合计证据。"""
+    """Decide per numeric column whether it can support counts or amount totals."""
     for key in rows[0]:
-        # 窗口合计会在各行重复出现，对其求和会虚构出更大的金额；其原始值仍可作为证据。
+        # Window totals repeat across rows; summing them invents money, though raw values remain valid.
         if key in shape.get("window_fields", ()):
             continue
         values = [
@@ -205,7 +208,7 @@ def _add_column_stats(counts, sums, rows, shape, mixed_grains):
 
 
 def _factual_source(entries) -> str:
-    """把证据序列化为可检索的事实文本；算术工具的 formula 字段不算事实。"""
+    """Serialize searchable factual evidence, excluding arithmetic formula fields."""
     factual_data = [
         {k: v for k, v in e["data"].items() if k != "formula"}
         if e["kind"] == "tool"
@@ -218,7 +221,7 @@ def _factual_source(entries) -> str:
 
 
 def _unsupported_claim_issues(plain, source, allowed) -> list[str]:
-    """答案中的数字和记录 ID 必须能在证据里找到。"""
+    """Require answer numbers and record IDs to appear in evidence."""
     problems = []
     unsupported = _numbers(plain) - allowed
     if unsupported:
@@ -294,7 +297,7 @@ def _invented_link_issues(answer, entries) -> list[str]:
 
 @dataclass
 class EvidenceLedger:
-    """仅记录本轮实际工具结果，约束最终回答的证据类型、引用和数值。"""
+    """Track actual tool results and constrain final evidence types, references, and values."""
 
     required: set[str] = field(default_factory=set)
     entries: list[dict[str, Any]] = field(default_factory=list)
@@ -303,13 +306,13 @@ class EvidenceLedger:
     registered_metric_ids: frozenset[str] | None = None
 
     def add(self, kind: str, data: Any, **meta) -> str:
-        """追加一条证据并返回其 ID（类型名大写加同类序号，如 DB1、KB2）。"""
+        """Append evidence and return its kind-prefixed ID, such as DB1 or KB2."""
         tag = kind.upper() + str(1 + sum(item["kind"] == kind for item in self.entries))
         self.entries.append(dict(id=tag, kind=kind, data=data, **meta))
         return tag
 
     def missing(self) -> set[str]:
-        """返回必需证据中尚未被已有条目满足的能力；业务范围拒绝证据会满足数据库类要求。"""
+        """Return unmet capabilities; business-denial evidence satisfies database requirements."""
         from src.agent.derived_calculation import CALCULATION, validated_quotes
 
         completed = {item["kind"] for item in self.entries}
@@ -348,11 +351,11 @@ class EvidenceLedger:
         return self.required - completed
 
     def summary(self) -> str:
-        """以 JSON 返回已成功证据的 id 与 kind 列表，不含证据内容。"""
+        """Return successful evidence IDs and kinds as JSON without their contents."""
         return json.dumps([{"id": e["id"], "kind": e["kind"]} for e in self.entries])
 
     def retry_hint(self) -> str:
-        """要求补齐缺失的能力，而不是重复已成功的 SQL。"""
+        """Request missing capabilities instead of repeating successful SQL."""
         from src.agent.derived_calculation import CALCULATION, discount_retry_hint
 
         missing = self.missing()
@@ -390,7 +393,7 @@ class EvidenceLedger:
         )
 
     def export_issues(self, rows, text):
-        """校验导出内容：正文须通过除导出外的证据检查，导出的行必须与已有的结构化查询/工具记录一致；返回问题列表。"""
+        """Check export grounding and require exported rows to match structured tool records."""
         check = EvidenceLedger(
             required=self.required - {"export"}, entries=self.entries, prompt=self.prompt
         )
@@ -399,6 +402,7 @@ class EvidenceLedger:
             candidates = []
 
             def collect(value):
+                """Collect structured row values recursively for export comparison."""
                 if isinstance(value, dict):
                     candidates.append(value)
                     for child in value.values():
@@ -460,12 +464,22 @@ class EvidenceLedger:
         return counts, sums
 
     def issues(self, answer: str) -> list[str]:
-        """检查最终答案与账本证据是否一致：证据缺失、算术与折扣公式、无依据的数字、合计不符、伪造链接等；返回问题列表。"""
+        """Check final grounding, arithmetic, totals, capabilities, and links; return all issues."""
         problems = []
         if missing := self.missing():
             problems.append("Missing successful evidence: " + ", ".join(sorted(missing)))
         if not self.required and not self.entries:
             return problems
+        if "kb" in self.required or any(entry["kind"] == "kb" for entry in self.entries):
+            supported_ids = {
+                entry["id"] for entry in self.entries if entry["kind"] == "kb" and entry["data"]
+            }
+            cited_ids = {marker.upper() for marker in re.findall(r"\[(KB\d+)\]", answer, re.I)}
+            if unknown := cited_ids - supported_ids:
+                problems.append(
+                    "Unknown or empty current-turn knowledge evidence IDs: "
+                    + ", ".join(sorted(unknown))
+                )
         from src.agent.arithmetic_claims import arithmetic_percentage_issues
         from src.agent.claim_formatting import (
             discount_formula_issues,
@@ -476,7 +490,7 @@ class EvidenceLedger:
         from src.agent.derived_calculation import validated_quotes
 
         quotes = validated_quotes(self.entries)
-        # 答案中出现的取整说明同样属于格式；既不能凭空造出事实性的 0，也不能因此拒绝正确结果。
+        # Rounding instructions are presentation: they neither invent factual zeroes nor invalidate results.
         presentation = prompt_reference_text(_plain(answer))
         problems.extend(arithmetic_percentage_issues(presentation, self.entries))
         from src.agent.arithmetic_contract import arithmetic_answer_issues
@@ -507,7 +521,7 @@ class EvidenceLedger:
                 rendered_metrics=self.rendered_metric_capabilities(),
             )
         )
-        # 问题中显式给出的日期/条数上限可以重复出现，但它们不满足 DB 完成度，也不满足下面的合计检查。
+        # Explicit dates and row limits may recur, but satisfy neither database completion nor totals.
         allowed |= _numbers(prompt_reference_text(self.prompt))
         problems.extend(_unsupported_claim_issues(plain, source, allowed))
         problems.extend(_total_mismatch_issues(plain, sums, counts))
@@ -521,13 +535,13 @@ class EvidenceLedger:
         return problems
 
     def safe_answer(self) -> str:
-        """渲染实际证据，而不是让模型编造修补内容。"""
+        """Render actual evidence instead of asking the model to invent repairs."""
         from src.agent.evidence_fallback import render_safe_answer
 
         return render_safe_answer(self)
 
     def rendered_metric_capabilities(self):
-        """只有成功的、类型化的目录度量才能满足已渲染的汇总。"""
+        """Accept only successful typed catalog metrics as rendered summary capabilities."""
         from src.agent.metric_results import metric_stats
 
         counts, amounts = metric_stats(self.entries)

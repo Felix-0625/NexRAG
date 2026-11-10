@@ -1,7 +1,6 @@
-"""自助式长期记忆 API：每位用户只能看到自己的记忆。
+"""Self-service long-term memory API with strict ownership isolation.
 
-有意不提供管理员越权：记忆属于个人数据，硬边界是经签名的
-Open WebUI 用户 ID。
+Administrators have no override: signed Open WebUI user IDs are the hard privacy boundary.
 """
 
 from __future__ import annotations
@@ -19,13 +18,15 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 
 
 class MemorySettingsForm(BaseModel):
+    """Personal long-term memory opt-in or opt-out request."""
+
     model_config = ConfigDict(extra="forbid")
     enabled: StrictBool
 
 
 @router.get("/settings")
 def personal_memory_settings(principal: Principal = Depends(get_principal)):
-    """查看当前登录用户自己的长期记忆开关，以及服务端是否已配置好记忆功能。"""
+    """Return the caller's memory preference and server-side availability."""
     return {
         "enabled": memory_enabled(principal.user_id),
         "configured": bool(settings.ENABLE_MEMORY and local_memory_configuration()),
@@ -36,7 +37,7 @@ def personal_memory_settings(principal: Principal = Depends(get_principal)):
 def update_personal_memory_settings(
     body: MemorySettingsForm, principal: Principal = Depends(get_principal)
 ):
-    """开启或关闭当前登录用户自己的长期记忆，并返回更新后的设置。"""
+    """Update the caller's long-term memory preference and return the new settings."""
     set_memory_enabled(principal.user_id, body.enabled)
     return personal_memory_settings(principal)
 
@@ -69,14 +70,16 @@ def _public(record) -> dict:
 
 @router.get("")
 def list_memories(include_history: bool = False, principal: Principal = Depends(get_principal)):
-    """列出当前登录用户自己的长期记忆，可选包含已失效的历史记录；记忆功能未启用时返回 503。"""
+    """List the caller's memories, optionally including history; return 503 when memory is
+    disabled.
+    """
     records = _service().store.list_for_user(principal.user_id, include_inactive=include_history)
     return {"data": [_public(r) for r in records]}
 
 
 @router.post("/{memory_id}/confirm")
 def confirm_memory(memory_id: str, principal: Principal = Depends(get_principal)):
-    """裁定争议时采纳这条记忆。"""
+    """Resolve a dispute in favor of this memory."""
     if not _service().confirm(principal.user_id, memory_id):
         raise HTTPException(status_code=404, detail="No disputed memory with this ID")
     return {"ok": True}
@@ -84,7 +87,7 @@ def confirm_memory(memory_id: str, principal: Principal = Depends(get_principal)
 
 @router.delete("/{memory_id}")
 def forget_memory(memory_id: str, principal: Principal = Depends(get_principal)):
-    """删除当前登录用户自己的一条记忆（连同其版本链）；不存在或不属于该用户时返回 404。"""
+    """Delete an owned memory and its version chain; return 404 for missing or unowned records."""
     removed = _service().forget(principal.user_id, memory_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Memory not found")
@@ -93,5 +96,5 @@ def forget_memory(memory_id: str, principal: Principal = Depends(get_principal))
 
 @router.delete("")
 def forget_all(principal: Principal = Depends(get_principal)):
-    """删除当前登录用户自己的全部记忆，返回删除条数。"""
+    """Delete all memories owned by the caller and return the deletion count."""
     return {"removed": _service().forget(principal.user_id)}

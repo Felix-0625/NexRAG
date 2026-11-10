@@ -1,4 +1,4 @@
-"""可选的搜索不得把查询发往 WebUI，也不得谎称不存在的服务可用。"""
+"""Optional search must not send queries to WebUI or claim absent services are available."""
 
 import asyncio
 from unittest.mock import Mock

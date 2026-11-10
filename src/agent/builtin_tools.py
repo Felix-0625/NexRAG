@@ -1,4 +1,4 @@
-"""经过审计的本地小工具，不加载代码，也不访问文件系统或网络。"""
+"""Audited local utilities that load no code and access neither files nor networks."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ MAX_QUOTE_AMOUNT = Decimal("1000000000")
 
 
 def calculate_discount_quote(amount, discount_percent) -> dict[str, str]:
-    """用 Decimal 运算计算金额报价，分位按四舍五入（ROUND_HALF_UP）取整。"""
+    """Calculate a Decimal discount quote with cent rounding using ROUND_HALF_UP."""
     try:
         if isinstance(amount, bool) or isinstance(discount_percent, bool):
             raise ValueError("Boolean values are not amounts")

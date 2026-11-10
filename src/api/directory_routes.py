@@ -1,4 +1,4 @@
-"""仅限管理员的组织架构与账户授权原子分配接口。"""
+"""Administrator-only organization and atomic account-assignment endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -11,6 +11,8 @@ router = APIRouter(prefix="/workspace/directory", tags=["organization"])
 
 
 class EgressForm(BaseModel):
+    """Account-level model, tool, and search egress grants."""
+
     external_models: bool = False
     external_search: bool = False
     external_tools: bool = False
@@ -19,6 +21,8 @@ class EgressForm(BaseModel):
 
 
 class AssignmentForm(BaseModel):
+    """Validated account assignment and replacement grant request."""
+
     user_id: str = Field(min_length=1, max_length=128)
     email: str = Field(min_length=3, max_length=254)
     name: str = Field(min_length=1, max_length=100)
@@ -31,19 +35,23 @@ class AssignmentForm(BaseModel):
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value):
-        """校验邮箱含 @ 且不含空白字符，并统一转为小写。"""
+        """Normalize email case after requiring an at-sign and forbidding whitespace."""
         if "@" not in value or any(char.isspace() for char in value):
             raise ValueError("邮箱格式无效")
         return value.lower()
 
 
 class DepartmentForm(BaseModel):
+    """Department identity and optional reporting parent."""
+
     id: str = Field(pattern="^[A-Za-z0-9_-]{1,100}$")
     name: str = Field(min_length=1, max_length=100)
     parent_id: str = Field(default="", max_length=100)
 
 
 class IdentityForm(BaseModel):
+    """Account identity metadata without authentication credentials."""
+
     user_id: str = Field(min_length=1, max_length=128)
     email: str = Field(min_length=3, max_length=254)
     name: str = Field(min_length=1, max_length=100)
@@ -51,8 +59,8 @@ class IdentityForm(BaseModel):
 
 @router.post("/identities")
 def register_identity(body: IdentityForm, _: Principal = Depends(require_admin)):
-    """管理员导入一条账号身份记录（已存在则忽略）；只写目录元数据，不创建凭据、不授予权限。"""
-    # 导入目录元数据不会创建凭据，也不会授予任何访问权限。
+    """Import identity metadata without creating credentials or grants; ignore existing identities."""
+    # Directory metadata creates neither credentials nor access grants.
     directory.store().execute(
         "INSERT OR IGNORE INTO company_accounts VALUES (?,?,?,?,?,?,?,?)",
         (body.user_id, body.email.lower(), body.name, "", "", "", "identity-import", 0),
@@ -61,6 +69,8 @@ def register_identity(body: IdentityForm, _: Principal = Depends(require_admin))
 
 
 class TemplateForm(BaseModel):
+    """Reusable explicit business-scope and egress grants."""
+
     id: str = Field(pattern="^[A-Za-z0-9_-]{1,100}$")
     name: str = Field(min_length=1, max_length=100)
     tenant_ids: list[str] = Field(default_factory=list, max_length=100)
@@ -69,13 +79,15 @@ class TemplateForm(BaseModel):
 
 @router.get("")
 def get_directory(_: Principal = Depends(require_admin)):
-    """管理员查看组织架构总览：账号、部门、授权模板、业务范围及授权关系。"""
+    """Return accounts, departments, templates, business scopes, and grants for administrators."""
     return directory.overview()
 
 
 @router.post("/validate")
 def validate_assignment(body: AssignmentForm, _: Principal = Depends(require_admin)):
-    """管理员预校验账号分配（业务范围、部门、上下级关系），不写入任何数据；不合法返回 400。"""
+    """Validate assignment without writes; reject invalid scopes, departments, or reporting lines
+    with 400.
+    """
     try:
         directory.validate_assignment(body.model_dump())
     except ValueError as exc:
@@ -85,7 +97,9 @@ def validate_assignment(body: AssignmentForm, _: Principal = Depends(require_adm
 
 @router.post("/accounts")
 def assign_account(body: AssignmentForm, principal: Principal = Depends(require_admin)):
-    """管理员在一个事务内分配账号：写入账号信息，并整体替换其业务范围授权与外发策略；校验失败返回 400。"""
+    """Atomically assign account details and replace scope and egress grants; reject invalid input
+    with 400.
+    """
     try:
         directory.assign(body.model_dump(), principal.email)
     except ValueError as exc:
@@ -95,7 +109,7 @@ def assign_account(body: AssignmentForm, principal: Principal = Depends(require_
 
 @router.post("/departments")
 def add_department(body: DepartmentForm, _: Principal = Depends(require_admin)):
-    """管理员新增或更新部门；上级部门不存在或上下级成环时返回 400。"""
+    """Create or update a department; reject missing parents or cycles with 400."""
     try:
         directory.department(body.id, body.name, body.parent_id)
     except ValueError as exc:
@@ -105,7 +119,7 @@ def add_department(body: DepartmentForm, _: Principal = Depends(require_admin)):
 
 @router.post("/templates")
 def add_template(body: TemplateForm, _: Principal = Depends(require_admin)):
-    """管理员新增或更新授权模板；包含不存在的业务范围时返回 400，不会改动已有账号的授权。"""
+    """Save a template without changing assigned accounts; reject unknown scopes with 400."""
     try:
         directory.save_template(
             body.id, body.name, {"tenant_ids": body.tenant_ids, "egress": body.egress.model_dump()}

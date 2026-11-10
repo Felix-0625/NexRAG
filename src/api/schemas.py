@@ -1,4 +1,4 @@
-"""OpenAI 兼容的对话与业务查询请求模型。"""
+"""OpenAI-compatible chat and business-query request models."""
 
 from typing import Any, List, Optional
 
@@ -6,14 +6,14 @@ from pydantic import BaseModel, Field
 
 
 class ChatMessage(BaseModel):
-    """单轮对话消息，包含角色与文本内容。"""
+    """One conversation message containing a role and text."""
 
     role: str
     content: str
 
 
 class ChatCompletionRequest(BaseModel):
-    """符合 OpenAI /v1/chat/completions 规范的请求体。"""
+    """Request body compatible with OpenAI /v1/chat/completions."""
 
     model: str = "NexRAG"
     messages: List[ChatMessage]
@@ -24,7 +24,7 @@ class ChatCompletionRequest(BaseModel):
 
 
 class ModelCard(BaseModel):
-    """OpenAI 模型发现接口中的单个模型描述。"""
+    """One model descriptor in OpenAI model discovery."""
 
     id: str
     name: str | None = None
@@ -55,14 +55,14 @@ class ModelCard(BaseModel):
 
 
 class ModelListResponse(BaseModel):
-    """可用模型列表的响应体。"""
+    """Response containing available models."""
 
     object: str = "list"
     data: List[ModelCard]
 
 
 class BusinessQueryRequest(BaseModel):
-    """租户范围内只读 SQL 分析的直接查询请求。"""
+    """Direct tenant-scoped read-only SQL analysis request."""
 
     tenant_id: str = Field(min_length=1)
     sql: str = Field(min_length=1, max_length=20_000)

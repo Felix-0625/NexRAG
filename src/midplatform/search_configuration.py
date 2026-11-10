@@ -1,4 +1,4 @@
-"""描述可选的搜索配置，不探测端点，也不发送查询。"""
+"""Describe optional search settings without probing or sending queries."""
 
 import ipaddress
 from urllib.parse import urlsplit
@@ -18,10 +18,10 @@ def _host(value):
 
 
 def search_configuration():
-    """已配置仅表示提供了有效端点，并不代表其运行健康。
+    """Treat a valid configured endpoint as configuration, not proof of health.
 
-    绝不回显无效 URL，因为其中可能含有误填的凭据。WebUI 源的本地别名
-    在查询到达之前就会被拒绝。
+    Never echo malformed URLs that may contain credentials. Reject WebUI-origin aliases
+    before any query can reach them.
     """
     if not settings.ENABLE_WEB_SEARCH:
         return {
@@ -71,5 +71,5 @@ def search_configuration():
 
 
 def public_search_configuration():
-    """返回搜索配置的对外视图，去掉服务端点地址。"""
+    """Return public search settings without the endpoint address."""
     return {k: v for k, v in search_configuration().items() if k != "endpoint"}

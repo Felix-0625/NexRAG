@@ -1,7 +1,7 @@
-"""为共享改进循环提供显式、非隐私的评估失败记录。
+"""Record explicit nonprivate evaluation failures for shared improvement.
 
-用户对话始终保持私密。只有管理员编写、且没有来源对话的合成样本，
-才能产生共享的失败证据。
+User conversations remain private. Only administrator-written synthetic samples without
+source conversations may contribute shared failure evidence.
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from src.evaluation.evaluators import RunOutcome
 from src.midplatform.ops_store import OpsStore, dumps, new_id, now
 from src.observability.tracer import Tracer, TraceRecord
 
-# 旧版可能把 holdout 和 regression 写成同样的 synthetic trace。
-# 读取时回查样本来源，让已有记录也遵守 train 边界。
+# Older versions wrote holdout and regression failures as synthetic traces too.
+# Recheck sample provenance so existing traces also respect the train-only boundary.
 TRAIN_FAILURE_TRACES = """
     FROM traces AS t
     JOIN dataset_items AS item ON item.id = json_extract(t.artifact_versions, '$.synthetic_item')
@@ -25,10 +25,10 @@ TRAIN_FAILURE_TRACES = """
 def record_synthetic_failure(
     item: DatasetItem, outcome: RunOutcome, quality: float, store: OpsStore
 ) -> str | None:
-    """为失败的合成样本记录一条共享失败 trace，返回其 ID。
+    """Record or reuse a shared failure trace for a synthetic train entry.
 
-    只接受无来源对话、且在合成夹具中运行的 train 样本；质量达标时返回 None。
-    同一样本已有记录则复用，避免重复运行制造虚假聚类。
+    Require a fixed synthetic fixture and no conversation provenance; return None for passing
+    samples. Reuse existing traces so repeated runs cannot fabricate cluster size.
     """
     if (
         item.split != "train"
@@ -38,7 +38,7 @@ def record_synthetic_failure(
         or quality >= 0.999
     ):
         return None
-    # 同一条目刷新失败证据和时间窗口。并发评测也只更新同一条 trace。
+    # Refresh one entry's evidence and time window; concurrent evaluations share its trace.
     with store.transaction(immediate=True) as conn:
         existing = store.query_one(
             "SELECT id FROM traces WHERE json_extract(artifact_versions,'$.synthetic_item')=? "

@@ -1,11 +1,8 @@
-"""评估门禁：候选只有通过全部规则才能进入审核。
+"""Require every evaluation gate before a candidate may enter review.
 
-规则（必须全部满足）：
-1. 安全：所有数据划分上的安全违规数均为零。
-2. 回归：基线通过的回归项，候选不得失败。
-3. holdout 收益：holdout 质量至少提升 EVOLUTION_MIN_GAIN。
-4. 其他 holdout 指标的退化不得超过 EVOLUTION_MAX_REGRESSION。
-5. 延迟增长不得超过 EVOLUTION_MAX_LATENCY_GROWTH。
+All splits must be safe, baseline regression successes must remain, holdout quality must
+gain EVOLUTION_MIN_GAIN, other metric drops must stay within EVOLUTION_MAX_REGRESSION,
+and latency growth must stay within EVOLUTION_MAX_LATENCY_GROWTH.
 """
 
 from __future__ import annotations
@@ -21,11 +18,13 @@ PASS_THRESHOLD = 0.999
 
 @dataclass
 class GateVerdict:
+    """Accumulated checks and the candidate's overall gate verdict."""
+
     passed: bool
     checks: list[dict] = field(default_factory=list)
 
     def add(self, name: str, ok: bool, detail: str) -> None:
-        """追加一项检查结果；任何一项未通过，整体结论即为未通过。"""
+        """Append a check; any failed check makes the overall verdict fail."""
         self.checks.append({"check": name, "passed": ok, "detail": detail})
         if not ok:
             self.passed = False
@@ -37,7 +36,7 @@ def evaluate_gate(
     *,
     regression_item_ids: list[str],
 ) -> GateVerdict:
-    """对比基线与候选的评估结果，逐项检查覆盖、安全、回归、holdout 收益、指标退化和延迟，全部通过才算通过。"""
+    """Compare coverage, safety, regression, holdout gain, metric drops, and latency gates."""
     verdict = GateVerdict(passed=True)
     same_items = (
         bool(baseline.item_scores) and baseline.item_scores.keys() == candidate.item_scores.keys()

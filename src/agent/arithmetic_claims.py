@@ -1,6 +1,7 @@
-"""防止计算得到的标量被贴上缺乏依据的百分比单位。
+"""Prevent computed scalars from acquiring unsupported percentage units.
 
-这是单位/来源检查，不是财务语义分类器；指标、期间和操作数是否选对，仍需靠答案质量评测。
+This checks units and provenance, not financial semantics; answer-quality evaluation must
+still verify the selected metrics, periods, and operands.
 """
 
 from __future__ import annotations
@@ -18,10 +19,10 @@ def _percentages(text: str) -> set[Decimal]:
 
 
 def arithmetic_percentage_issues(answer: str, entries) -> list[str]:
-    """金额差值不会因为数值已知就成为百分比。
+    """Require actual percentage arithmetic for derived percentages, including recorded rounding.
 
-    来源中的百分比仍可原样引用；派生百分比必须来自真实的百分比运算，包括其记录的取整结果。
-    这里刻意不增加第二次模型调用，也不猜测业务含义。
+    Source percentages may be quoted unchanged. A known amount difference is not a percentage;
+    this check neither adds a model call nor guesses business meaning.
     """
     calculations = [
         entry["data"]
@@ -55,8 +56,8 @@ def arithmetic_percentage_issues(answer: str, entries) -> list[str]:
             }
     from src.agent.claim_formatting import normalize_arithmetic_presentation
 
-    # 只有绑定来源的等式才可豁免 *100% 中的缩放常数。
-    # 整个已验证等式都被遮蔽，避免其分母在展示归一化后被误当成百分比声明。
+    # Only source-bound equations may exempt the scaling constant in *100%.
+    # Mask the verified equation so its normalized denominator cannot become a percentage claim.
     claims = normalize_arithmetic_presentation(answer, entries, mask_formulas=True)
     unsupported = _percentages(claims) - supported
     if unsupported:

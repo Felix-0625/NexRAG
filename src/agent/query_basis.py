@@ -1,7 +1,7 @@
-"""执行前，要求谓词中的直接字面量能在当前请求里找到依据。
+"""Require direct predicate literals to be grounded in the current request before execution.
 
-这是额外的正确性检查，不是 SQL 授权，也不是通用的自然语言等价证明；计算表达式仍需语义审查，
-数据访问的权威仍是源视图和只读防护。
+This extra correctness check is neither SQL authorization nor general semantic equivalence;
+computed expressions still need review. Source views and read-only guards remain authoritative.
 """
 
 import re
@@ -13,15 +13,15 @@ from sqlglot import exp
 
 
 def require_filter_basis(value, prompt: str, *, tenant_id: str = "") -> None:
-    """要求单个筛选字面量能在当前问题中找到依据，否则抛出 ValueError；等于已授权租户 ID 的值直接放行。"""
+    """Require a filter literal in the current question, except the server-authorized tenant ID."""
     text = unicodedata.normalize("NFKC", prompt).casefold()
     literal = unicodedata.normalize("NFKC", str(value)).casefold()
     if literal == tenant_id.casefold() and tenant_id:
-        return  # 已由服务器授权的身份，无法借此选择其他范围。
+        return  # The server already authorized this identity; it cannot select another scope.
     try:
         number = Decimal(literal)
     except InvalidOperation:
-        literal = literal.strip("%_")  # LIKE 通配符不属于业务值。
+        literal = literal.strip("%_")  # LIKE wildcards are syntax, not business values.
         pattern = re.escape(literal)
         if literal.isascii():
             pattern = rf"(?<![a-z0-9_]){pattern}(?![a-z0-9_])"
@@ -38,7 +38,7 @@ def require_filter_basis(value, prompt: str, *, tenant_id: str = "") -> None:
 
 
 def require_query_filter_basis(sql: str, prompt: str, *, tenant_id: str = "") -> None:
-    """遍历 SQL 的 WHERE/HAVING 谓词，对其中的直接字面量逐一调用 require_filter_basis；这不是 SQL 授权检查。"""
+    """Check direct WHERE and HAVING literals without treating this as SQL authorization."""
     tree = sqlglot.parse_one(sql, read="sqlite")
     comparisons = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Like, exp.ILike)
     for clause in tree.find_all(exp.Where, exp.Having):

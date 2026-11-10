@@ -1,7 +1,7 @@
-"""依据来源布局和请求中的比较方向，绑定时序计算的操作数。
+"""Bind temporal operands using source layout and the requested comparison direction.
 
-只接受带标签的单元格、分句和对齐列表；遇到歧义直接拒绝，不擅自修正模型选择的操作数。
-未支持的布局需要补充来源证据，不能只凭算术成立就判定任务完成。
+Accept only labeled cells, clauses, and aligned lists. Reject ambiguous operands rather
+than repairing model choices; unsupported layouts require additional source evidence.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ NUMBER = r"(?<![\w.])-?\d+(?:,\d{3})*(?:\.\d+)?(?!\w|\.\d)"
 
 
 class PeriodRequest(BaseModel):
+    """Explicit old and new periods for a temporal comparison."""
+
     model_config = ConfigDict(frozen=True)
     old_period: str
     new_period: str
@@ -23,6 +25,8 @@ class PeriodRequest(BaseModel):
 
 
 class SourceFact(BaseModel):
+    """One source-bound metric value with its period and unit context."""
+
     model_config = ConfigDict(frozen=True)
     evidence_id: str
     metric: str
@@ -33,7 +37,7 @@ class SourceFact(BaseModel):
 
 
 def period_request(prompt: str) -> PeriodRequest | None:
-    """识别请求明确给出的比较方向，不按日期排序猜测新旧角色。"""
+    """Read the explicitly requested direction without guessing old and new roles from date order."""
     clean = re.sub(r"\S*/(?:19|20)\d{2}/\S+", "", prompt)
     if len(set(re.findall(YEAR, clean))) < 2:
         return None
@@ -86,7 +90,7 @@ def _unit(text: str) -> str:
     ):
         if re.search(pattern, text, re.I):
             units.append(label)
-    # 同一引文或表头可能包含多种币种、数量级，不能据此把不同单元格视为同单位。
+    # A shared quote or header may contain multiple currencies or scales; it does not prove equal units.
     if (
         len(set(units) & {"USD", "CNY", "EUR", "GBP"}) > 1
         or len(set(units) & {"million", "billion", "thousand", "万", "亿"}) > 1
@@ -120,7 +124,7 @@ def _fact(evidence_id, metric, period, raw, quote, unit_context) -> SourceFact:
 
 
 def _table_row_facts(evidence_id, header, cells, line) -> list[SourceFact]:
-    """年份表头下的数据行：每个年份列对应一个事实。"""
+    """Read year-header table rows as one fact per year column."""
     facts = []
     for index, year in header[1]:
         raw = re.fullmatch(r"\s*\$?\s*(" + NUMBER + r")\s*", cells[index])
@@ -131,7 +135,9 @@ def _table_row_facts(evidence_id, header, cells, line) -> list[SourceFact]:
 
 
 def _respectively_facts(evidence_id, clause, values, year_tokens) -> list[SourceFact]:
-    """ "分别 / respectively"：金额与年份构成两个互不交错、大小相等的块时，按顺序一一对应。"""
+    """Pair nonoverlapping, equal-sized amount and year blocks explicitly aligned by
+    'respectively'.
+    """
     if len({token[0] for token in year_tokens}) != len(year_tokens):
         return []
     if not (values[-1].end() < year_tokens[0].start() or year_tokens[-1].end() < values[0].start()):
@@ -144,7 +150,7 @@ def _respectively_facts(evidence_id, clause, values, year_tokens) -> list[Source
 
 
 def _single_pair_fact(evidence_id, clause, year, value) -> SourceFact:
-    """分句里只有一个年份和一个数值：年份前后的文字合起来作为指标名。"""
+    """Read one year and one value from a clause, using surrounding text as the metric label."""
     if year.start() < value.start():
         metric = clause[: year.start()] + " " + clause[year.end() : value.start()]
     else:
@@ -153,9 +159,10 @@ def _single_pair_fact(evidence_id, clause, year, value) -> SourceFact:
 
 
 def _trailing_qualified_facts(evidence_id, clause, values, year_tokens) -> list[SourceFact]:
-    """带限定的尾部列表可能跟在无关金额之后：
-    "... $x for A and $y and $z, respectively, of B"。只有紧邻且被 "of B" 明确限定的
-    金额列表才会绑定；日历日期数字和更早的金额组不算单元格。
+    """Read only an explicitly qualified trailing list after unrelated amounts.
+
+    In '... $x for A and $y and $z, respectively, of B', bind only the adjacent amounts
+    qualified by 'of B'; calendar numbers and earlier amount groups are not cells.
     """
     aligned = re.search(r"\brespectively\s*,?\s+of\s+(.+)", clause, re.I)
     if aligned is None or not 2 <= len(year_tokens) <= 8:
@@ -187,11 +194,11 @@ def _trailing_qualified_facts(evidence_id, clause, values, year_tokens) -> list[
 
 
 def _clause_facts(evidence_id, clause) -> list[SourceFact]:
-    """从一个分句读取事实；三种可接受的版式互斥，其余一律不产出。"""
+    """Read a clause using mutually exclusive supported layouts, otherwise return no facts."""
     tokens = list(re.finditer(NUMBER, clause))
     year_tokens = [token for token in tokens if re.fullmatch(YEAR, token[0])]
     values = [token for token in tokens if token not in year_tokens]
-    # 只有当所有金额与年份构成两个互不交错、大小相等的块，且来源明确将其对齐时，才接受有序列表。
+    # Accept ordered lists only when the source explicitly aligns equal-sized nonoverlapping year and amount blocks.
     ordered = re.search(r"\brespectively\b|分别", clause, re.I)
     if ordered and 2 <= len(values) == len(year_tokens) <= 8:
         return _respectively_facts(evidence_id, clause, values, year_tokens)
@@ -201,7 +208,7 @@ def _clause_facts(evidence_id, clause) -> list[SourceFact]:
 
 
 def source_facts(evidence_id: str, text: str) -> list[SourceFact]:
-    """读取无歧义的年份/数值对应关系，并保留来源上下文。"""
+    """Extract unambiguous year-value pairs while retaining source context."""
     facts = []
     header = None
     for line in text.splitlines():
@@ -222,7 +229,7 @@ def source_facts(evidence_id: str, text: str) -> list[SourceFact]:
 
 
 def bind_period_operands(prompt, left, right, source_texts) -> dict | None:
-    """核实指标、期间和单位的角色，无法唯一绑定时在计算前拒绝。"""
+    """Verify metric, period, and unit roles; reject nonunique bindings before calculation."""
     request = period_request(prompt)
     if request is None:
         return None
@@ -262,9 +269,10 @@ def _resolve_fact(request, period, evidence) -> SourceFact:
 
 
 def period_calculation_inputs(prompt: str, entries) -> dict | None:
-    """在模型选择工具前提供已核实的来源角色，避免依赖失败后的纠正提示。
+    """Prepare verified source roles before model selection instead of relying on failure hints.
 
-    与计算工具共用同一解析器校验输入；这里只准备参数与阶段状态，不执行计算或判定任务完成。
+    Share input parsing with the arithmetic tool; prepare phase state without executing or
+    claiming task completion.
     """
     request = period_request(prompt)
     if request is None:

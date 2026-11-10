@@ -1,7 +1,7 @@
-"""对未被改动的应用默认值做窄范围、带版本的修正。
+"""Apply narrow versioned corrections to untouched built-in defaults.
 
-这是软件基线迁移，不是模型生成的 RSI 晋升。自定义指引和
-staging 候选仍走各自明确的治理流程。
+These are baseline software migrations, not model-generated promotions. Custom guidance
+and staging candidates retain their explicit governance paths.
 """
 
 from src.agent.prompts import DEFAULT_GUIDANCE
@@ -19,7 +19,7 @@ LEGACY_KNOWLEDGE_RULE = (
 
 
 def upgrade_shared_knowledge_default(store, artifact) -> bool:
-    """只替换完全未被改动的旧版种子，并保留其版本历史。"""
+    """Replace only an unchanged old seed while preserving version history."""
     legacy = DEFAULT_GUIDANCE.replace(CURRENT_KNOWLEDGE_RULE, LEGACY_KNOWLEDGE_RULE)
     if (
         artifact.kind != "prompt"
@@ -30,8 +30,8 @@ def upgrade_shared_knowledge_default(store, artifact) -> bool:
     ):
         return False
     with store.transaction() as connection:
-        # 插入前先做 compare-and-swap，使并发的解析方（含不同 SQLite 连接）
-        # 收敛到同一个替换版本。
+        # Compare and swap before insertion so concurrent resolvers, including separate SQLite
+        # connections, converge on one replacement version.
         changed = connection.execute(
             "UPDATE artifact_versions SET label='archived' "
             "WHERE id=? AND label='production' AND created_by='system' "

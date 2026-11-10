@@ -12,8 +12,18 @@ $patches = @(
     (Join-Path $patchRoot 'nexrag/tenant-selector.diff'),
     (Join-Path $patchRoot 'nexrag/ops-dashboard.diff'),
     (Join-Path $patchRoot 'nexrag/workspace.diff'),
-    (Join-Path $patchRoot 'nexrag/security-npm.diff')
+    (Join-Path $patchRoot 'nexrag/security-npm.diff'),
+    (Join-Path $patchRoot 'nexrag/fonts.diff')
 )
+
+# Keep binary removal outside the text-only patch/index comparison below.
+# Run on both the already-prepared and fresh-replay paths.
+function Remove-UnusedWebUIFont {
+    $font = Join-Path $checkoutPath 'static/assets/fonts/Vazirmatn-Variable.ttf'
+    if (Test-Path -LiteralPath $font -PathType Leaf) {
+        Remove-Item -LiteralPath $font
+    }
+}
 
 function Move-VerifiedWebUISource([string]$repository) {
     $sourceAbsolute = [System.IO.Path]::GetFullPath($repository)
@@ -168,6 +178,7 @@ try {
         if ($LASTEXITCODE -ne 0 -or $actual -cne $expected.TrimEnd("`n")) { $matches = $false; break }
     }
     if ($matches) {
+        Remove-UnusedWebUIFont
         Write-Host "Open WebUI is already prepared with all patches at $checkoutPath"
         exit 0
     }
@@ -238,5 +249,7 @@ foreach ($patch in $patches) {
 
     Write-Host "Applied: $patch"
 }
+
+Remove-UnusedWebUIFont
 
 Write-Host "Open WebUI is ready at $checkoutPath ($upstreamCommit)"

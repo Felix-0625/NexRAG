@@ -1,7 +1,7 @@
-"""针对同一条经过校验的生产 Agent 路径的内部实验控制项。
+"""Internal evaluation controls for the same validated production agent path.
 
-这些选项由受信任的评测代码构造，聊天 HTTP schema 不接受它们。实验会固定指引/参数，
-并在内存中收集原始观测，不会把合成轮次写入用户记忆。
+Trusted evaluators construct these options; public chat schemas reject them. Pin guidance
+and parameters, collect observations in memory, and never write synthetic turns to user memory.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from typing import Any
 
 @dataclass
 class EvaluationRun:
+    """Trusted internal overrides for isolated artifact evaluation."""
+
     guidance: str
     params: dict[str, Any]
     required_tools: list[str] = field(default_factory=list)

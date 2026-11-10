@@ -71,6 +71,13 @@ candidates_fetched = Histogram(
     buckets=_COUNT_BUCKETS,
 )
 
+retrieval_channel_candidates = Histogram(
+    "retrieval_channel_candidates",
+    "Candidate count before fusion in each five-channel retrieval lane.",
+    ["channel"],
+    buckets=_COUNT_BUCKETS,
+)
+
 # Which fusion path actually ran: native server-side RRF (sparse present),
 # client-side BM25 RRF fallback, or dense-only.
 hybrid_path_total = Counter(

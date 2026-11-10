@@ -38,6 +38,84 @@ def test_parent_child_splitter_indexes_leaves_with_recoverable_parent():
     assert leaves[0].meta["parent_id"] == leaves[1].meta["parent_id"]
 
 
+def test_indexed_windows_preserve_exact_source_ranges_and_file_boundaries():
+    from haystack import Document
+
+    settings = _settings(
+        chunk_split_by="word",
+        chunk_size=5,
+        chunk_overlap=1,
+        chunk_min_size=0,
+        enable_parent_child_chunks=True,
+        parent_chunk_size=20,
+        parent_chunk_overlap=0,
+        enable_context_windows=True,
+        context_window_size=1,
+    )
+    text = " ".join(f"word{i}" for i in range(45))
+    sources = [
+        Document(content=text, meta={"file_id": file, "ingest_version": "v1"})
+        for file in ["one", "two"]
+    ]
+    leaves = build_splitter(settings).run(sources)["documents"]
+    for source in sources:
+        group = [leaf for leaf in leaves if leaf.meta["file_id"] == source.meta["file_id"]]
+        assert len(group) > 3
+        for index, leaf in enumerate(group):
+            meta = leaf.meta
+            start, end = meta["context_window_start"], meta["context_window_end"]
+            assert meta["source_id"] == source.id
+            assert meta["context_window"] == text[start:end]
+            assert (
+                text[meta["split_idx_start"] : meta["split_idx_start"] + len(leaf.content)]
+                == leaf.content
+            )
+            for neighbor in group[max(0, index - 1) : index + 2]:
+                assert neighbor.content in meta["context_window"]
+    assert len({leaf.meta["source_id"] for leaf in leaves}) == 2
+
+
+def test_window_offsets_are_not_invented_for_transformed_text():
+    from haystack import Document
+
+    from app.pipelines.context_windows import attach_context_windows
+
+    leaf = Document(
+        content="transformed",
+        meta={
+            "parent_id": "p",
+            "parent_text": "changed",
+            "split_idx_start": 0,
+            "context_window": "stale",
+            "context_window_start": 0,
+            "context_window_end": 5,
+        },
+    )
+    attach_context_windows(Document(content="original"), [leaf], radius=1)
+    assert "context_window" not in leaf.meta
+    assert "split_idx_start" not in leaf.meta
+
+
+def test_window_offsets_advance_past_repeated_signature_and_date_text():
+    from haystack import Document
+
+    from app.pipelines.context_windows import attach_context_windows
+
+    signature = "Signature: ____\nWitness: ____\nDate: ____"
+    date = "Date: ____"
+    parent = "Intro\n" + signature + "\nAnother party\n" + signature
+    text = parent + "\n" + date
+    split = parent.rindex(signature)
+    leaves = [
+        Document(content=parent[: split + 15], meta={"parent_id": "p1", "parent_text": parent}),
+        Document(content=signature, meta={"parent_id": "p1", "parent_text": parent}),
+        Document(content=date, meta={"parent_id": "p2", "parent_text": date}),
+    ]
+    attach_context_windows(Document(content=text), leaves, radius=1)
+    assert [leaf.meta["split_idx_start"] for leaf in leaves] == [0, split, text.rindex(date)]
+    assert leaves[-1].meta["context_window_end"] == len(text)
+
+
 def test_build_splitter_word_returns_haystack_splitter():
     s = _settings(chunk_split_by="word")
     sp = build_splitter(s)

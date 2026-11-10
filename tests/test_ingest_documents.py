@@ -1,4 +1,4 @@
-"""检查本地知识库流程所用的文档上传标识符。"""
+"""Document upload identifiers used by local knowledge ingestion."""
 
 import argparse
 import json
@@ -9,7 +9,7 @@ from scripts.ingest_documents import _documents, _file_id, _ingest_native
 
 
 def test_reupload_keeps_id_and_same_named_files_do_not_collide(tmp_path: Path):
-    """两个团队可以各自导入 guide.pdf，互不覆盖。"""
+    """Two teams can import guide.pdf without overwriting each other."""
     first = tmp_path / "team-a" / "guide.pdf"
     second = tmp_path / "team-b" / "guide.pdf"
     first.parent.mkdir()
@@ -23,7 +23,7 @@ def test_reupload_keeps_id_and_same_named_files_do_not_collide(tmp_path: Path):
 
 
 def test_native_ingest_dry_run_and_json_export(tmp_path: Path):
-    """原生摄取的试运行模式会切分文本并导出为 JSON。"""
+    """Native dry-run chunks text and exports JSON."""
     doc_path = tmp_path / "doc.txt"
     doc_path.write_text("Hello world.\n\nThis is a test document.", encoding="utf-8")
     out_json = tmp_path / "exported.json"
@@ -56,7 +56,7 @@ def test_native_ingest_dry_run_and_json_export(tmp_path: Path):
 
 
 def test_native_ingest_embeds_and_upserts(tmp_path: Path):
-    """原生摄取会为子块生成嵌入并写入 Qdrant。"""
+    """Native ingestion embeds children and upserts Qdrant."""
     doc_path = tmp_path / "article.md"
     doc_path.write_text("Paragraph one.\n\nParagraph two.", encoding="utf-8")
 
@@ -86,12 +86,12 @@ def test_native_ingest_embeds_and_upserts(tmp_path: Path):
         assert mock_embed.called
         assert mock_sparse.called
         assert mock_upsert.called
-        # 稀疏嵌入必须传到 upsert 调用（默认走混合检索）。
+        # Sparse embeddings must reach upsert because hybrid retrieval is the default.
         assert mock_upsert.call_args.kwargs["sparse_embeddings"] == ["sparse-vec"]
 
 
 def test_native_ingest_no_sparse_flag_skips_bm42(tmp_path: Path):
-    """--no-sparse 会跳过 BM42 嵌入，只写入稠密向量。"""
+    """--no-sparse skips BM42 and writes dense vectors only."""
     doc_path = tmp_path / "article.md"
     doc_path.write_text("Paragraph one.\n\nParagraph two.", encoding="utf-8")
 
@@ -123,7 +123,7 @@ def test_native_ingest_no_sparse_flag_skips_bm42(tmp_path: Path):
 
 
 def test_native_revision_cleanup_preserves_other_libraries(monkeypatch):
-    """在隔离的测试数据上验证 Qdrant 本地 upsert/delete 的真实语义。"""
+    """Verify real local Qdrant upsert and delete semantics with isolated data."""
     from qdrant_client import QdrantClient, models
 
     from scripts.ingest_documents import _upsert_to_qdrant
@@ -136,6 +136,7 @@ def test_native_revision_cleanup_preserves_other_libraries(monkeypatch):
     chunker = NativeParentChildChunker()
 
     def ingest(text, scope):
+        """Provide ingest test data or behavior for this scenario."""
         chunks = chunker.chunk_text(text, "doc.txt", file_id="same-file", collection_name=scope)
         _upsert_to_qdrant(chunks, [[0.1, 0.2] for _ in chunks], None, "unused", None, "test")
 
@@ -153,7 +154,7 @@ def test_native_revision_cleanup_preserves_other_libraries(monkeypatch):
             "private-b": "private B remains unchanged",
         }
         assert all(point.payload["meta"]["parent_text"] for point in points)
-        # 单独创建的混合集合使用 Qdrant 端的 IDF，而不是客户端文本打分。
+        # A separate hybrid collection uses server-side IDF, not client text scoring.
         chunks = chunker.chunk_text("hybrid source", "hybrid.txt", collection_name="hybrid")
         _upsert_to_qdrant(
             chunks,

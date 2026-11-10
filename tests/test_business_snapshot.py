@@ -1,4 +1,4 @@
-"""真实的数据源更新、并发读取、清理与租户隔离。"""
+"""Real source updates, concurrent reads, cleanup, and tenant isolation."""
 
 import asyncio
 import sqlite3
@@ -12,6 +12,7 @@ from src.midplatform.adapters import SQLiteAdapter, SQLiteSourceProfile, ViewSpe
 
 @pytest.fixture
 def source(tmp_path, monkeypatch):
+    """Create an isolated business-data source for this scenario."""
     path = tmp_path / "source.db"
     with sqlite3.connect(path) as owner:
         owner.execute("CREATE TABLE sales(tenant TEXT, id TEXT, amount REAL)")
@@ -41,6 +42,7 @@ def test_one_turn_is_consistent_next_turn_is_fresh_and_snapshot_closes(source):
     path, adapter = source
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         async with business_read_session() as session:
             first = await asyncio.to_thread(
                 session.read, "SELECT id,amount FROM sales ORDER BY id", "a"
@@ -73,6 +75,7 @@ def test_one_turn_is_consistent_next_turn_is_fresh_and_snapshot_closes(source):
 
 def test_parallel_tools_create_one_snapshot_and_failure_closes_it(source):
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         session = None
         with pytest.raises(RuntimeError, match="synthetic run failure"):
             async with business_read_session() as session:
@@ -109,6 +112,7 @@ def test_production_agent_tools_reuse_snapshot_and_close_after_model_run(source,
     step = 0
 
     def model(messages, info):
+        """Provide deterministic model responses for this scenario."""
         nonlocal step
         for message in messages:
             for part in message.parts:
@@ -134,6 +138,7 @@ def test_production_agent_tools_reuse_snapshot_and_close_after_model_run(source,
         return ModelResponse([TextPart("A1：1250，A2：750。总金额：2000。")])
 
     async def run():
+        """Run this scenario in an isolated asynchronous context."""
         with runner._agent.override(model=FunctionModel(model)):
             return await runner.run(
                 "查询数据库明细和总金额",
@@ -148,5 +153,5 @@ def test_production_agent_tools_reuse_snapshot_and_close_after_model_run(source,
     assert all(session is sessions[0] for session in sessions)
     with pytest.raises(ValueError, match="closed"):
         sessions[0].snapshot.execute_query("SELECT * FROM sales", "a")
-    # 生产轮次已结束；独立发起的新读取能看到所有者的更新。
+    # The production turn ended; a fresh standalone read may observe the owner's update.
     assert source[1].execute_query("SELECT SUM(amount) total FROM sales", "a") == [{"total": 2250}]

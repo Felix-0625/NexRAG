@@ -1,4 +1,4 @@
-"""用 Olist 真实的多卖家订单结构检验卖家边界。"""
+"""Seller isolation over Olist's real multi-seller order structure."""
 
 import sqlite3
 from contextlib import closing
@@ -13,6 +13,7 @@ from src.midplatform.safety import UnsafeQueryError
 
 @pytest.fixture
 def adapter(tmp_path):
+    """Provide adapter test data or behavior for this scenario."""
     database = tmp_path / "business.db"
     with closing(sqlite3.connect(database)) as connection:
         connection.executescript(

@@ -1,7 +1,7 @@
-"""用 SQLGlot AST 和私有快照中强制执行的键检查查询粒度。
+"""Check query grain with SQLGlot and snapshot-enforced keys.
 
-这有意设计为有界的语义检查，而不是对任意 SQL 的证明。复杂连接/子查询仍不予认证，
-写保护和租户防护照常生效。
+This bounded check is not proof for arbitrary SQL. Reject unsupported complex joins and
+subqueries while keeping write and tenant guards independent.
 """
 
 from __future__ import annotations
@@ -13,11 +13,13 @@ from sqlglot import exp
 
 
 class QuerySemanticsError(ValueError):
-    """查询的聚合投影存在歧义。"""
+    """Report ambiguous aggregate projections."""
 
 
 @dataclass(frozen=True)
 class QueryShape:
+    """Certified output grain and safe deterministic aggregation fields."""
+
     row_preserving: bool = False
     grouped: bool = False
     aggregate: bool = False
@@ -25,15 +27,15 @@ class QueryShape:
     window_fields: tuple[str, ...] = ()
     grain: str | None = None
     join_cardinality: str | None = None
-    # 仅用于已认证的连接：可安全用于确定性汇总的输出字段。
-    # None 保留旧的单视图证据；空元组表示一个都不允许。
+    # Only certified joins expose fields safe for deterministic aggregation.
+    # None preserves legacy single-view evidence; an empty tuple permits nothing.
     sum_fields: tuple[str, ...] | None = None
     count_fields: tuple[str, ...] | None = None
     distinct_order_keys: tuple[tuple[str, ...], ...] = ()
     warning: str | None = None
 
     def as_dict(self):
-        """转换为普通字典。"""
+        """Convert query shape to a plain dictionary."""
         return asdict(self)
 
 
@@ -59,13 +61,13 @@ def _collapses_rows(node):
 
 
 def _prove_joins(query, views):
-    """逐个 SELECT 验证连接粒度，只返回最外层查询的证明。"""
+    """Validate all SELECT joins and return only the outermost proof."""
     from src.midplatform.join_grain import prove_join_grain
 
     join_proof = None
     if views is not None:
-        # 嵌套的连接也要逐个校验。外层 CTE 不能把 fanout 聚合藏在内层 SELECT 里，
-        # 即使其输出本身未被认证。
+        # Validate nested joins too: outer CTEs must not hide inner fanout aggregates,
+        # even if the outer output is itself uncertified.
         for select in query.find_all(exp.Select):
             if select.args.get("joins"):
                 proof = prove_join_grain(select, views)
@@ -75,7 +77,7 @@ def _prove_joins(query, views):
 
 
 def _resolve_groups(group, projections, aliases):
-    """把 GROUP BY 中的位置序号和别名还原为实际表达式。"""
+    """Resolve GROUP BY positions and aliases into expressions."""
     groups = []
     for item in group.expressions if group else []:
         if isinstance(item, exp.Literal) and item.is_int:
@@ -90,7 +92,7 @@ def _resolve_groups(group, projections, aliases):
 
 
 def _collapsing_aggregates(query):
-    # OVER 之下的聚合属于窗口函数，不会折叠行。
+    # Aggregates under OVER are windows and do not collapse rows.
     return [
         node
         for node in query.find_all(exp.Func)
@@ -104,7 +106,7 @@ def _collapsing_aggregates(query):
 
 
 def _root_view(join_proof, views, tables):
-    """取得根视图：有连接证明时用其根别名，否则按表名匹配。"""
+    """Find the root from a join proof or table name."""
     if join_proof:
         return join_proof.aliases[join_proof.root_alias]
     return next(
@@ -123,7 +125,7 @@ def _enforced_keys(view, join_proof):
 def _check_aggregate_projections(
     projections, grouped_expressions, grouped_columns, key_grouped, join_proof, identity
 ):
-    """聚合/分组查询中，拒绝 SELECT * 和未分组且无唯一键依赖的明细列。"""
+    """Reject stars and ungrouped details lacking unique-key dependence."""
     from src.midplatform.join_grain import free_column_nodes
 
     for item in projections:
@@ -154,7 +156,7 @@ def _preserves_rows(query, group, aggregates, key_grouped, keys, output_columns)
 
 
 def _distinct_order_keys(query, projections, join_proof, preserves, identity):
-    """订单粒度视图的唯一键若全部出现在输出列中，返回对应的输出字段名。"""
+    """Return projected order-key fields only when the full unique key appears."""
     distinct_order_keys = []
     if join_proof and preserves and not query.args.get("limit") and not query.args.get("offset"):
         for alias, joined_view in join_proof.aliases.items():
@@ -172,7 +174,7 @@ def _distinct_order_keys(query, projections, join_proof, preserves, identity):
 
 
 def _sum_fields(query, projections, join_proof, preserves, identity):
-    """可安全做确定性求和的输出字段；单视图明细证据保持 None。"""
+    """Identify safely summable fields, preserving None for single-view legacy details."""
     if not (join_proof or not preserves):
         return None
     return tuple(
@@ -207,10 +209,10 @@ def _shape_warning(group, preserves, aggregates):
 
 
 def inspect_query(sql: str, views=None) -> QueryShape:
-    """认证简单的行粒度；拒绝 SQLite 中结果不确定的裸列。
+    """Certify simple row grain and reject SQLite's indeterminate bare columns.
 
-    分组查询只有在分组和输出中都包含已强制的主键时，才保留源行。仅用窗口函数
-    本身就保留行，不能误判为折叠行的聚合。
+    Groups retain source rows only when enforced keys appear in grouping and output.
+    Window-only queries retain rows and are not collapsing aggregates.
     """
     query = sqlglot.parse_one(sql, read="sqlite")
     if not isinstance(query, exp.Select):
@@ -262,7 +264,7 @@ def inspect_query(sql: str, views=None) -> QueryShape:
 
 
 def evidence_shape(entry) -> dict:
-    """没有有效查询的旧版/评测证据无法认证粒度。"""
+    """Leave legacy or evaluation evidence without valid SQL uncertified."""
     if entry.get("query_semantics") is not None:
         return entry["query_semantics"]
     try:

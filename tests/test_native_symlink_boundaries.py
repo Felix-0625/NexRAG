@@ -1,7 +1,6 @@
-"""原生 Windows 符号链接边界；绝不用 NTFS 联接点代替。
+"""Native Windows symlink boundaries, never substituted with NTFS junctions.
 
-本地 Windows 会话没有符号链接权限时，会明确跳过链接相关用例。
-GitHub Actions 的 Windows 运行器必须执行这些用例：创建链接失败即视为 CI 失败。
+Skip explicitly when local symlink privilege is absent; Windows CI must create links or fail.
 """
 
 import errno
@@ -18,7 +17,7 @@ from src.midplatform.sandbox_file import FileSandboxSecurityError, inspect_file_
 
 
 def snapshot(directory):
-    """同时记录名称与内容，这样即使多出一次意外写入也能被发现。"""
+    """Snapshot names and contents so even extra unintended writes are detectable."""
     return {
         path.relative_to(directory).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in sorted(directory.rglob("*"))
@@ -28,6 +27,7 @@ def snapshot(directory):
 
 @pytest.fixture
 def boundary(tmp_path, monkeypatch):
+    """Provide boundary test data or behavior for this scenario."""
     root = tmp_path / "root"
     sandbox, exports, outside = root / "sandbox", root / "exports", tmp_path / "outside"
     for directory in (sandbox, exports, outside / "nested"):
@@ -42,7 +42,10 @@ def boundary(tmp_path, monkeypatch):
 
 @pytest.fixture
 def native_link():
+    """Provide native link test data or behavior for this scenario."""
+
     def create(path: Path, target: Path, *, directory=False):
+        """Provide create test data or behavior for this scenario."""
         if os.name != "nt":
             pytest.skip("Native Windows symlink case requires Windows")
         try:

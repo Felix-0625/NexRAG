@@ -1,4 +1,4 @@
-"""用确定性任务代替真实 LLM，覆盖端到端的演进周期。"""
+"""End-to-end evolution with deterministic tasks instead of real models."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from src.observability.tracer import Tracer, TraceRecord
 
 
 def seed_items(store):
+    """Provide seed items test data or behavior for this scenario."""
     rows = [("train", "Q-train"), ("holdout", "Q-holdout"), ("regression", "Q-regression")]
     for split, question in rows:
         store.execute(
@@ -38,6 +39,7 @@ def seed_items(store):
 
 
 def seed_failures(store, n=6):
+    """Provide seed failures test data or behavior for this scenario."""
     for index in range(n):
         datasets.add_synthetic_item(
             f"Count the orders in synthetic case {index}",
@@ -51,9 +53,10 @@ def seed_failures(store, n=6):
 
 
 def task_answers_with_more_tables(seen: list[str]):
-    """仅当 prune_max_tables >= 3 时答案才正确（模拟改进效果）。"""
+    """Simulate improvement by succeeding only with prune_max_tables at least three."""
 
     async def task(item, guidance, params):
+        """Provide task test data or behavior for this scenario."""
         seen.append(item.split)
         good = params.get("prune_max_tables", 2) >= 3
         return RunOutcome(
@@ -85,7 +88,7 @@ def test_cycle_creates_gated_proposal_with_change_report(isolated_ops, monkeypat
     )
     assert all(check["passed"] for check in change["gate"])
     assert change["rollback"]["to_version"] == reg.production("params").id
-    # 在人工批准并晋升之前，生产环境保持不变。
+    # Production stays unchanged until human approval and promotion.
     assert reg.production("params").content["prune_max_tables"] == 2
 
 
@@ -135,7 +138,7 @@ def test_held_out_failures_stay_out_of_mining_and_prompt_evidence(isolated_ops):
         )
         item = datasets.items((split,), isolated_ops)[0]
         assert record_synthetic_failure(item, outcome, 0.0, isolated_ops) is None
-        # 复现旧版把独立验证失败写成共享 trace 后的数据库状态。
+        # Reproduce old shared traces incorrectly populated with holdout failures.
         legacy_trace_ids.append(
             record_synthetic_failure(replace(item, split="train"), outcome, 0.0, isolated_ops)
         )
@@ -182,7 +185,7 @@ def test_canary_auto_rollback_on_online_drop(isolated_ops):
     states = EvolutionCycle(store=isolated_ops, reg=reg).monitor_canaries()
     assert states[0]["state"] == "rolled_back"
     assert reg.by_label("params", "staging") is None
-    assert json.loads(json.dumps(states))  # 可序列化，供仪表盘使用
+    assert json.loads(json.dumps(states))  # Keep dashboard reports serializable.
 
 
 def test_unrelated_version_traffic_does_not_count_as_canary_evidence(isolated_ops):

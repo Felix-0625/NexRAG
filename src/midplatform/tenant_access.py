@@ -1,9 +1,7 @@
-"""依据 Open WebUI 签名的用户身份，授权业务租户视图的访问。
+"""Authorize tenant views using signed Open WebUI identity.
 
-租户目录和按用户的授权由管理员通过 ``/v1/ops/tenants`` 管理，存放在 ops store
-（``tenants``/``tenant_grants`` 表）中，而不是部署者手改的 YAML。
-``TENANT_ACCESS_PATH`` 仅在首次启动时用来填充该表一次，因此只带 YAML 的既有
-部署和 fixture 无需手动迁移即可继续工作。
+Administrators manage tenants and grants in operations storage. TENANT_ACCESS_PATH seeds
+fresh stores once, preserving YAML deployments and fixtures without manual migration.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ from src.midplatform.ops_store import OpsStore, get_ops_store, now
 
 @dataclass(frozen=True)
 class Principal:
-    """由 Open WebUI 服务端转发的已验证身份。"""
+    """Verified identity forwarded by the Open WebUI backend."""
 
     user_id: str
     email: str
@@ -34,10 +32,10 @@ class Principal:
 
 
 def get_principal(request: Request) -> Principal:
-    """要求同时提供服务密钥和独立签名的 Open WebUI JWT。
+    """Require a service key and separately signed Open WebUI JWT.
 
-    普通的 X-OpenWebUI-User-* 请求头和浏览器提供的租户 ID 都不算认证。
-    JWT 由 Open WebUI 在完成自身登录校验后签发。
+    Plain user headers and browser tenant IDs are not authentication. Open WebUI signs the
+    JWT after validating its own login.
     """
     service_key = settings.NEXRAG_SHARED_API_KEY
     jwt_secret = settings.NEXRAG_USER_JWT_SECRET
@@ -103,10 +101,9 @@ def get_principal(request: Request) -> Principal:
 
 
 def seed_from_yaml(store: OpsStore | None = None, path: str | Path | None = None) -> int:
-    """表仍为空时，从 TENANT_ACCESS_PATH 填充租户目录/授权。
+    """Seed tenants and grants only while the tables remain empty.
 
-    每个全新的 ops 数据库只运行一次。从未使用管理界面的部署行为与之前完全一致；
-    用过的部署则开始自己持有数据，此后本函数永远是空操作。
+    Run once per fresh store. Management then owns the data and future calls are no-ops.
     """
     store = store or get_ops_store()
     if store.query_one("SELECT 1 FROM tenants LIMIT 1"):
@@ -136,7 +133,7 @@ def seed_from_yaml(store: OpsStore | None = None, path: str | Path | None = None
 
 
 def list_tenants(store: OpsStore | None = None) -> dict[str, str]:
-    """完整的租户目录，即管理员所看到的视图。"""
+    """Return the complete administrator-visible tenant catalog."""
     store = store or get_ops_store()
     seed_from_yaml(store)
     return {
@@ -146,7 +143,7 @@ def list_tenants(store: OpsStore | None = None) -> dict[str, str]:
 
 
 def allowed_tenants(principal: Principal, store: OpsStore | None = None) -> dict[str, str]:
-    """只返回分配给该已验证用户的业务租户。"""
+    """Return only tenants assigned to the verified user."""
     store = store or get_ops_store()
     tenants = list_tenants(store)
     if not tenants:
@@ -160,7 +157,7 @@ def allowed_tenants(principal: Principal, store: OpsStore | None = None) -> dict
 
 
 def create_tenant(tenant_id: str, label: str, store: OpsStore | None = None) -> None:
-    """新增业务租户；ID 已存在时抛出 ValueError。"""
+    """Create a tenant, rejecting duplicate IDs."""
     store = store or get_ops_store()
     seed_from_yaml(store)
     if store.query_one("SELECT 1 FROM tenants WHERE tenant_id = ?", (tenant_id,)):
@@ -169,7 +166,7 @@ def create_tenant(tenant_id: str, label: str, store: OpsStore | None = None) -> 
 
 
 def delete_tenant(tenant_id: str, store: OpsStore | None = None) -> None:
-    """在同一事务中删除租户及所有账号对它的授权；租户不存在时静默无操作。"""
+    """Atomically delete a tenant and its grants; ignore missing tenants."""
     store = store or get_ops_store()
     with store.transaction() as conn:
         conn.execute("DELETE FROM tenant_grants WHERE tenant_id = ?", (tenant_id,))
@@ -179,7 +176,7 @@ def delete_tenant(tenant_id: str, store: OpsStore | None = None) -> None:
 def set_grant(
     email: str, tenant_id: str, granted: bool, granted_by: str, store: OpsStore | None = None
 ) -> None:
-    """授予或撤销某用户对某个租户的访问权。"""
+    """Grant or revoke one user's access to one tenant."""
     store = store or get_ops_store()
     seed_from_yaml(store)
     email = email.lower()
@@ -197,7 +194,7 @@ def set_grant(
 
 
 def list_grants(store: OpsStore | None = None) -> dict[str, list[str]]:
-    """所有用户的租户授权，以邮箱为键。"""
+    """Return all tenant grants keyed by email."""
     store = store or get_ops_store()
     seed_from_yaml(store)
     grants: dict[str, list[str]] = {}

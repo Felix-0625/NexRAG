@@ -49,7 +49,7 @@ NexRAG 以原生进程运行 Open WebUI、单 Agent 后端、AarhusAI 文档摄�
 
 ## 网页和知识库
 
-Release 源码包包含前端准备脚本和四个补丁。首次运行 `start.cmd` 时，`scripts/prepare-webui.ps1` 会联网检出 Open WebUI `v0.11.4` 的固定提交，按序应用 tenant-selector、ops-dashboard、workspace 和 security-npm，随后启动器安装依赖并启动网页。生成的 `webui/` 在本机复用。维护前端时，应把修改同步到 `patches/open-webui/v0.11.4/nexrag/`，以便新用户从发布包重建相同界面。来源与许可见 [NOTICE](../patches/open-webui/NOTICE.md)。
+Release 源码包包含前端准备脚本和五个补丁。首次运行 `start.cmd` 时，`scripts/prepare-webui.ps1` 会联网检出 Open WebUI `v0.11.4` 的固定提交，按序应用 tenant-selector、ops-dashboard、workspace、security-npm 和 fonts，随后删除无用的 Vazirmatn TTF；启动器再安装依赖并启动网页。生成的 `webui/` 在本机复用。维护前端时，应把修改同步到 `patches/open-webui/v0.11.4/nexrag/`，以便新用户从发布包重建相同界面。来源与许可见 [NOTICE](../patches/open-webui/NOTICE.md)。
 
 个人库通过“工作空间 → 知识库”创建。私人库只能由所有者或明确获得授权的账号访问，管理员身份不构成旁路。企业库由管理员维护并按授权下发，员工引用同一个库，管理员内容更新后无需复制到每个员工账号。知识权限和业务数据库范围是两套独立授权。
 
@@ -73,28 +73,62 @@ Release 源码包包含前端准备脚本和四个补丁。首次运行 `start.c
 
 ## 检索配置
 
-默认复用 Qdrant Query API、Haystack 分块器和 FastEmbed，不自建词法搜索引擎。仅 Child 计算 Dense 和 BM42 Sparse；Parent 正文 `parent_text` 和 `parent_id` 随 Child Payload 保存。查询中 Dense 与 Sparse 候选分别应用知识范围过滤，在 Qdrant 用 RRF 融合；本地 BGE 对 Child 打分，先精选 Top-3，再展开 Parent 并按库/文件/Parent 标识去重。相同 Parent 的多个命中合并后可能不足三份，不补入未入选的低分 Parent。
+原生新安装默认启用四路召回。BGE-M3 稠密语义、BGE-M3 稀疏词项权重、标题与文件名和文档结构链路分别产生候选，并按点 ID 用加权 RRF 融合。文件名使用 Qdrant 多语言文本索引取有界候选，再按词项匹配排序。结构路查询章节标题，沿命中的文档检索其章节，并沿父块序号查找相邻父块。所有结构请求均限定同库、同文件、同版本。
+
+设置 `ENABLE_GRAPH_RAG=true` 可额外启用实体 GraphRAG。它为每个 Qdrant 物理集合中的知识库分别保存 SQLite 图，使用原文实体、关系和出处。查询仅打开授权知识库的图，每条路径最多两跳，边界限定在同一个知识库。多库查询融合各库候选。路径中的每条关系都会从 Qdrant 核验知识库、文件、版本和原文哈希。图文件放在 `GRAPH_STORE_PATH` 对应的 `.scopes` 目录，启用时摄入服务启动补齐旧库图数据，新上传和删除会更新对应图。 [通道消融实测](acceptance/rag-quality-20261109.md)
+
+本地 BGE 对融合后的 Child 重排，选出最多 `min(请求 K, RERANK_TOP_K)` 个 Child，默认展开 Parent 并按库、文件和 Parent 标识去重。多个 Child 命中同一个 Parent 时，实际返回的 Parent 数会少于 K。知识正文总预算为 12,000 字符。摄入启动及首次入库时会补齐索引，旧库升级保留现有向量和原文。未启用五路、索引尚未就绪或选用 DBSF 时沿用原检索路径。现有的中文 BM25 实验开关默认关闭。本机受管 Qdrant 版本为 1.19.1。
 
 | 环境变量 | 默认与作用 |
 | --- | --- |
-| `QDRANT_INDEX` | `nexrag_knowledge`，摄入与检索共享的物理集合 |
+| `QDRANT_INDEX` | 新安装默认 `nexrag_knowledge_bge_m3`，摄入与检索共享的物理集合 |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `bge-m3` / 1024；换模型或维度需新建索引并重新摄入 |
 | `ENABLE_SPARSE_EMBEDDINGS` / `ENABLE_HYBRID_SEARCH` | `true` / `true`，写入与检索必须配套 |
-| `SPARSE_MODEL` | `Qdrant/bm42-all-minilm-l6-v2-attentions`，两侧须使用相同模型 |
+| `ENABLE_FILENAME_RETRIEVAL` | `false`。实验配置，上传时自动提取文件标题，供稀疏索引和重排使用。比较时通过正常上传摄入到独立集合，避免混用两种稀疏向量 |
+| `SPARSE_MODEL` | 新安装默认 `BAAI/bge-m3`，两侧须使用相同模型 |
 | `CHUNK_SPLIT_BY` | `token`，复用 tokenizer 和递归切分器 |
 | `ENABLE_PARENT_CHILD_CHUNKS` | `true`，只索引叶子；父正文内嵌 |
 | `PARENT_CHUNK_SIZE` / `PARENT_CHUNK_OVERLAP` | 1200 / 0，与当前切分单位一致 |
 | `PARENT_CANDIDATE_MULTIPLIER` | 3，扩大粗筛 Child 候选 |
+| `INITIAL_RETRIEVAL_MULTIPLIER` | 3，允许 1–10；启用重排时，候选数为请求 K 乘以两个倍率的较大值 |
+| `RETRIEVAL_CANDIDATE_LIMIT` | 可选 1–200；覆盖线性路径的候选数，独立于返回 K |
 | `RERANKER_MODEL` / `RERANKER_THREADS` | `BAAI/bge-reranker-base` / 2，本地 cross-encoder |
-| `RERANK_FUSION` | 原生启动固定 `replace`，RRF 只用于粗召回，最终按 cross-encoder 排序 |
-| `RERANK_TOP_K` | 原生启动固定 3，先保留 Child 再展开 Parent |
+| `ENABLE_FIVE_CHANNEL_RETRIEVAL` | 原生默认开启多路融合；同时关闭该项与 `ENABLE_GRAPH_RAG` 会切回两路 |
+| `ENABLE_BODY_LEXICAL_RETRIEVAL` | 原生默认关闭正文精确词法；开启后保留其独立候选与排序权重 |
+| `RERANK_FUSION` / `RERANK_RRF_K` | `replace` / 60；选 `rrf` 时融合粗召回排名与 cross-encoder 排名 |
+| `RERANK_TOP_K` | 3，允许 1–20；先保留 Child 再展开 Parent |
+| `RERANK_DEDUP_BEFORE_LIMIT` | 默认关闭；开启后按重排顺序先合并同一 Parent 的命中，再限制返回数量 |
+| `HYBRID_FUSION` | 原生 Qdrant 候选融合，`rrf`（默认）或 `dbsf`；与重排融合独立 |
+| `HYBRID_RRF_K` / `HYBRID_DENSE_WEIGHT` / `HYBRID_SPARSE_WEIGHT` | 原生 RRF 常数 2、两路权重各 1；需在开发/验证分区评估，`dbsf` 不使用这些值 |
+| `ENABLE_CONTEXT_WINDOWS` / `CONTEXT_WINDOW_SIZE` | 默认关闭 / 1；正常摄入时为每个 Child 自动保存左右邻接块的原文窗口与位置，需启用父子分块 |
+| `RETRIEVAL_CONTEXT_MODE` | `parent`、`matched_child` 或 `window`；窗口模式返回自动保存的邻域原文，旧索引缺少窗口时返回 Child 并标记 `context_window_missing`；位置指向解析后正文 |
+| `KNOWLEDGE_TOP_K` | 可选 1–20；设置后覆盖部署中的 RSI 参数值。未设置时读取已生效参数，初始值为 3 |
 | `RERANK_MIN_SCORE` | 0.05，BGE logit sigmoid 后的分数；是可调过滤线，不是正确率保证 |
 | `RERANK_REQUIRED` | 原生启动固定 `true`；重排不可用时报告失败，不伪装经过质检 |
+
+窗口模式沿用[入库保存邻域、检索后替换上下文](https://developers.llamaindex.ai/python/examples/node_postprocessor/metadatareplacementdemo/)的设计，复用现有分块器，不额外引入 Agent 框架。窗口仅用于证据返回，不加入 Embedding 输入。开启后通过正常上传重新摄入即可；比较分块、窗口和融合配置时使用独立知识库。候选参数尚未通过完整发布验收，不能据此宣称达到医疗或法律领域的质量要求。
 | `RETRIEVAL_TIMEOUT_SECONDS` | 45 秒，单次知识查询预算 |
+
+高要求场景的分项评估见 [RAG 质量验收](acceptance/rag-quality-targets.md)。
+
+可在 `.env` 中加入以下候选配置，重启后试用。此配置最多粗召回 80 个 Child，重排保留 16 个。回退时删除 `KNOWLEDGE_TOP_K`，并恢复原有重排配置。
+
+```ini
+ENABLE_HYBRID_SEARCH=true
+INITIAL_RETRIEVAL_MULTIPLIER=5
+PARENT_CANDIDATE_MULTIPLIER=3
+KNOWLEDGE_TOP_K=16
+RERANK_TOP_K=16
+RERANK_FUSION=rrf
+RERANK_RRF_K=60
+RERANK_MIN_SCORE=0.05
+```
 
 旧索引 `parent_content` 仍兼容读取，新摄入使用 `parent_text`，响应元数据移除重复父正文。没有父信息的旧块保持原片段返回。不要原地将密集索引改为不同维度/不同模型的混合索引；使用新集合名并重新摄入，保留旧资料后再核对。
 
-Qdrant 官方目前说明 BM42 是实验性方案，修正过早期 benchmark；本项目按指定方案使用它，不宣称其比 BM25 更好。默认 BM42 基于英文 MiniLM，中文及行业词的效果需要独立语料评测。BGE 的排序分数也没有跨语料统一阈值，调阈值应看漏召回与噪音的平衡。[官方 BM42 说明](https://qdrant.tech/articles/bm42/)、[官方混合查询](https://qdrant.tech/documentation/search/hybrid-queries/)。
+BGE-M3 的稀疏 Provider 已接入摄入和查询。原生环境中设置 `SPARSE_MODEL=BAAI/bge-m3` 会为两端选择该 Provider。模型固定在官方版本 `5617a9f61b028005a4858fdac845db406aefb181`，首次使用时下载 ONNX 编码器、tokenizer 和稀疏头。可通过 `BGE_M3_MODEL_PATH` 指定该版本的本地完整目录。两端共用原始 token ID 的正词项权重，使用 ReLU 投影、同 token 最大值聚合和特殊 token 过滤。
+
+稀疏模型身份保存在 Qdrant 集合元数据中。已有安装继续读取配置中指定的模型和集合，旧版隐式 BM42 集合也继续使用原配置。切换 BGE-M3 前须在独立集合完整重建稀疏向量。模型身份不匹配的查询和摄入会报错。 [验收记录](acceptance/rag-quality-20261109.md) · [官方模型说明](https://huggingface.co/BAAI/bge-m3)
 
 ## 外部能力与诊断
 

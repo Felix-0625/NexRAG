@@ -1,9 +1,7 @@
-"""运行一次批量自进化周期和记忆维护。
+"""Run one batch evolution cycle and memory maintenance.
 
-可通过计划任务/cron（如每天一次）调度，也可手动运行：
-    python scripts/evolve.py                 # 挖掘 -> 提案 -> 门禁 -> 提交，金丝雀监控
-    python scripts/evolve.py --memory-only   # 会话晋升、衰减、保留期清理、outbox 重放
-这里不会晋升任何提案：提案留在管理后台等待管理员处理。
+Schedule daily or run manually; --memory-only skips evolution. Proposals remain in the
+administration queue and are never promoted here.
 """
 
 from __future__ import annotations
@@ -24,7 +22,9 @@ from src.observability.tracer import tracer  # noqa: E402
 
 
 async def maintain_memory() -> dict:
-    """执行记忆维护（空闲会话晋升、衰减与保留期清理、outbox 重放）并返回各项计数；记忆服务未启用时返回 disabled。"""
+    """Maintain idle sessions, decay, retention, and vector replay; return counts or disabled
+    status.
+    """
     service = get_memory_service()
     if service is None:
         return {"memory": "disabled"}
@@ -36,7 +36,7 @@ async def maintain_memory() -> dict:
 
 
 async def main_async(args) -> dict:
-    """先做记忆维护并清理过期 trace；除非指定 --memory-only，再载入种子数据并运行一次自进化周期，返回汇总结果。"""
+    """Maintain memory and traces, then optionally seed datasets and run evolution."""
     result: dict = {"memory": await maintain_memory(), "traces_purged": tracer.purge_expired()}
     if args.memory_only:
         return result
@@ -47,7 +47,7 @@ async def main_async(args) -> dict:
 
 
 def main() -> int:
-    """解析命令行参数，运行自进化与记忆维护并以 JSON 打印结果，返回进程退出码 0。"""
+    """Parse options, run maintenance and evolution, print JSON, and return zero."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

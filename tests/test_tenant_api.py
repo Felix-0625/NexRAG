@@ -1,4 +1,4 @@
-"""在 HTTP 边界验证 Open WebUI 身份与卖家授权。"""
+"""Verify Open WebUI identities and seller grants at the HTTP boundary."""
 
 import time
 from pathlib import Path
@@ -19,6 +19,7 @@ SHARED_ORDER = "002f98c0f7efd42638ed6100ca699b42"
 
 @pytest.fixture
 def authorized_client(tmp_path, monkeypatch):
+    """Provide authorized client test data or behavior for this scenario."""
     policy = tmp_path / "tenant-access.yaml"
     policy.write_text(
         f"tenants:\n  {SELLER_A}: Seller A\n  {SELLER_B}: Seller B\n"
@@ -32,6 +33,7 @@ def authorized_client(tmp_path, monkeypatch):
 
 
 def headers(role="user", *, secret="a" * 32):
+    """Build signed request headers for the test identity."""
     claims = {
         "sub": "webui-user-1",
         "email": "viewer@example.local",
@@ -125,6 +127,7 @@ def test_chat_checks_signed_user_and_seller_before_agent(authorized_client, monk
 
 def test_chat_stream_uses_openai_sse_frames(authorized_client, monkeypatch):
     async def mock_stream(prompt, context, history=None):
+        """Provide mock stream test data or behavior for this scenario."""
         context.usage = {"prompt_tokens": 21, "completion_tokens": 13, "total_tokens": 34}
         yield "Verified answer"
 

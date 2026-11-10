@@ -1,7 +1,7 @@
-"""聊天与工具执行共用的小型默认拒绝（default-deny）外发策略。
+"""Default-deny egress policy shared by chat and tools.
 
-授权回答"哪些记录可读"；本模块另外决定它们的内容可以在哪里处理。
-provider 标签永远不能证明处理发生在本地。
+Authorization determines readable records; additionally control where their contents may
+be processed. Provider labels alone do not prove local execution.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ CLASSIFICATIONS = {"public", "internal", "secret"}
 
 
 def ensure_policy_schema():
-    """确保数据策略表与账号外发表已创建，并返回 ops 数据库。"""
+    """Ensure resource and account-egress tables exist and return operations storage."""
     store = get_ops_store()
     with store.transaction() as connection:
         connection.executescript("""
@@ -37,7 +37,7 @@ def ensure_policy_schema():
 
 
 def is_loopback_endpoint(url: str) -> bool:
-    """判断 URL 是否为不带内嵌凭据的本机回环地址（localhost 或 loopback IP）。"""
+    """Accept credential-free localhost or loopback-IP endpoints only."""
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
         return False
@@ -50,7 +50,7 @@ def is_loopback_endpoint(url: str) -> bool:
 
 
 def model_is_local(model: dict) -> bool:
-    """判断模型是否在本机处理：厂商须为 ollama 或 custom、名称不含云端标记，且接口地址为回环地址；仅看厂商标签不算。"""
+    """Require a loopback Ollama or custom endpoint and noncloud model name."""
     name = model.get("model_name", "").lower()
     return (
         model.get("provider") in {"ollama", "custom"}
@@ -61,7 +61,7 @@ def model_is_local(model: dict) -> bool:
 
 
 def resource_policy(kind: str, identifier: str) -> dict:
-    """读取业务范围或知识库的数据策略；未登记时按 internal 且禁止全部外发返回默认值。"""
+    """Read resource policy, defaulting unknown resources to internal with no egress."""
     row = ensure_policy_schema().query_one(
         "SELECT * FROM data_policies WHERE kind=? AND resource_id=?", (kind, identifier)
     )
@@ -84,9 +84,8 @@ def save_resource_policy(
     external_tools: bool,
     changed_by: str,
 ):
-    """保存业务范围或知识库的数据分级与外发开关。
-
-    secret 禁止任何外发；只有 public 才允许外部搜索。违反规则或类型无效抛出 ValueError。
+    """Save classification and egress flags; secrets cannot leave and only public data permits
+    search.
     """
     if kind not in {"tenant", "knowledge"} or classification not in CLASSIFICATIONS:
         raise ValueError("无效的数据类型或分级")
@@ -110,7 +109,7 @@ def save_resource_policy(
 
 
 def account_policy(email: str) -> dict:
-    """读取账号（邮箱不区分大小写）的外发授权配置；未配置时返回空字典，即全部不允许。"""
+    """Read case-insensitive account egress grants, defaulting to none."""
     row = ensure_policy_schema().query_one(
         "SELECT config FROM account_egress WHERE email=?", (email.lower(),)
     )
@@ -118,7 +117,7 @@ def account_policy(email: str) -> dict:
 
 
 def save_account_policy(email: str, config: dict, changed_by: str):
-    """保存（覆盖）账号的外发授权配置，邮箱统一转小写，并记录修改人与时间。"""
+    """Replace normalized account-egress grants and record actor and time."""
     ensure_policy_schema().execute(
         "INSERT OR REPLACE INTO account_egress VALUES (?,?,?,?)",
         (email.lower(), json.dumps(config), changed_by, now()),
@@ -127,6 +126,8 @@ def save_account_policy(email: str, config: dict, changed_by: str):
 
 @dataclass(frozen=True)
 class DataAccessPolicy:
+    """Effective intersection of account grants and resource egress restrictions."""
+
     classification: str = "internal"
     external_models: bool = False
     external_search: bool = False
@@ -135,14 +136,12 @@ class DataAccessPolicy:
     allowed_tool_ids: tuple[str, ...] = ()
 
     def to_dict(self):
-        """转换为普通字典。"""
+        """Convert policy to a plain dictionary."""
         return asdict(self)
 
     def check_model(self, model: dict):
-        """检查模型是否可处理本次数据，不允许时抛出 ValueError。
-
-        须在账号授权的模型清单内；非本机模型还要求数据非 secret、已开放外部模型、
-        已被明确列入授权清单且使用 HTTPS。
+        """Require model distribution and enforce HTTPS and explicit egress grants for remote
+        models.
         """
         if self.allowed_model_ids and model["id"] not in self.allowed_model_ids:
             raise ValueError("当前账号未获授权使用此模型")
@@ -159,10 +158,10 @@ class DataAccessPolicy:
 def effective_policy(
     email: str, tenant_id: str, knowledge_ids, knowledge_labels=None
 ) -> DataAccessPolicy:
-    """将账号审批与每个选中的可读资源取交集。
+    """Intersect account approval with every selected readable resource.
 
-    所有可读知识库都计入，因为自动检索可能用到其中任何一个。未知标签一律视为
-    internal，不能悄悄开启外发。
+    Include all readable knowledge libraries because automatic retrieval may use any of them.
+    Unknown classifications are internal and never implicitly enable egress.
     """
     resources = [resource_policy("tenant", tenant_id)] if tenant_id else []
     resources += [
@@ -176,6 +175,7 @@ def effective_policy(
     )
 
     def allowed(capability):
+        """Require account and resource approval for this egress capability."""
         return (
             classification != "secret"
             and bool(account.get(capability))
@@ -193,7 +193,7 @@ def effective_policy(
 
 
 async def refresh_knowledge_authorization(context):
-    """在使用工具/模型前刷新 ACL；桥接失败时按关闭（fail closed）处理。"""
+    """Refresh knowledge ACLs before tools or models, failing closed on bridge errors."""
     if not getattr(context, "enforce_live_authorization", False):
         return
     from src.midplatform.workspace import get_setting
