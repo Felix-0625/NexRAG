@@ -12,6 +12,37 @@ from app.http_client import bearer, get_client
 log = logging.getLogger(__name__)
 _local_model = None
 _local_model_lock = threading.Lock()
+# Attention tensors grow with the longest pair in each batch. Keep the default
+# within the memory budget of a local workstation, even for many long chunks.
+_LOCAL_BATCH_SIZE = 4
+
+
+def _score_local_batches(model, query: str, documents: list[str]) -> list[float]:
+    from onnxruntime.capi.onnxruntime_pybind11_state import Fail, RuntimeException
+
+    scores: list[float] = []
+    batch_size = _LOCAL_BATCH_SIZE
+    while len(scores) < len(documents):
+        batch = documents[len(scores) : len(scores) + batch_size]
+        try:
+            batch_scores = [float(score) for score in model.rerank(query, batch)]
+        except (Fail, RuntimeException, RuntimeError, MemoryError) as exc:
+            message = str(exc).lower()
+            allocation_failed = (
+                isinstance(exc, MemoryError)
+                or "out of memory" in message
+                or ("available memory" in message and "requested bytes" in message)
+                or "failed to allocate memory" in message
+            )
+            if not allocation_failed or len(batch) == 1:
+                raise RuntimeError("Local cross-encoder inference failed") from exc
+            batch_size = max(1, len(batch) // 2)
+            log.warning("Local reranker allocation failed; retrying in batches of %d", batch_size)
+            continue
+        if len(batch_scores) != len(batch):
+            raise ValueError("Local cross-encoder returned an incomplete batch of scores")
+        scores.extend(batch_scores)
+    return scores
 
 
 def _local_rerank_scores(query: str, documents: list[str]) -> list[float]:
@@ -30,7 +61,7 @@ def _local_rerank_scores(query: str, documents: list[str]) -> list[float]:
                 cache_dir=settings.fastembed_cache_dir or None,
                 threads=settings.reranker_threads or None,
             )
-        raw_scores = [float(score) for score in _local_model.rerank(query, documents)]
+        raw_scores = _score_local_batches(_local_model, query, documents)
         if settings.reranker_model.startswith("BAAI/bge-reranker"):
             # BGE emits unbounded logits. Sigmoid keeps their order while
             # making the returned relevance score interpretable on 0..1.
@@ -66,14 +97,22 @@ async def rerank(
         return [], [], []
 
     try:
+        inputs = documents
+        if settings.enable_filename_retrieval:
+            # Add the upload title to the model input while keeping returned
+            # evidence verbatim. Older vectors may lack the metadata.
+            inputs = []
+            for text, meta in zip(documents, metadatas, strict=True):
+                title = meta.get("search_title")
+                inputs.append(f"{title}\n{text}" if isinstance(title, str) and title else text)
         if settings.reranker_provider == "fastembed":
-            scores = await asyncio.to_thread(_local_rerank_scores, query, documents)
+            scores = await asyncio.to_thread(_local_rerank_scores, query, inputs)
         else:
             url = f"{settings.reranker_api_base_url.rstrip('/')}/v1/rerank"
             payload = {
                 "model": settings.reranker_model,
                 "query": query,
-                "documents": documents,
+                "documents": inputs,
                 "top_n": len(documents),  # get scores for all, we sort ourselves
             }
             resp = await get_client().post(

@@ -22,6 +22,62 @@ def _patch_has_sparse(return_value=False):
     return patch(HAS_SPARSE_PATH, return_value=return_value)
 
 
+def test_windows_keep_separate_regions_of_one_parent_and_preserve_source(monkeypatch):
+    from app.config import settings
+    from app.services.pipeline import dedup_topk, restore_parent_context
+
+    monkeypatch.setattr(settings, "retrieval_context_mode", "window")
+    common = {
+        "collection_name": "allowed",
+        "file_id": "f",
+        "ingest_version": "v1",
+        "source_id": "source",
+        "parent_id": "same",
+        "parent_text": "large parent",
+    }
+    metas = [
+        {
+            **common,
+            "context_window": "left hit",
+            "context_window_start": 0,
+            "context_window_end": 8,
+        },
+        {
+            **common,
+            "context_window": "right hit",
+            "context_window_start": 20,
+            "context_window_end": 29,
+        },
+        {
+            **common,
+            "context_window": "left hit",
+            "context_window_start": 0,
+            "context_window_end": 8,
+        },
+    ]
+    texts, metadata, scores = restore_parent_context(
+        ["hit", "hit", "left"], metas, [0.9, 0.8, 0.7]
+    )
+    texts, metadata, scores = dedup_topk(
+        [RetrievalResult(texts=texts, metadatas=metadata, distances=scores)], 3
+    )
+    assert texts == ["left hit", "right hit"]
+    assert all("context_window" not in meta and "parent_text" not in meta for meta in metadata)
+    assert metadata[1]["context_window_start"] == 20
+
+
+def test_window_mode_uses_verbatim_child_when_index_has_no_verified_window(monkeypatch):
+    from app.config import settings
+    from app.services.pipeline import restore_parent_context
+
+    monkeypatch.setattr(settings, "retrieval_context_mode", "window")
+    texts, metadata, _ = restore_parent_context(
+        ["original"], [{"parent_text": "a huge parent", "context_window": "unrelated"}], [0.9]
+    )
+    assert texts == ["original"]
+    assert metadata == [{"context_window_missing": True}]
+
+
 async def test_basic_search_flow():
     request = SearchRequest(queries=["hello"], collection_names=["coll1"], k=2)
     mock_qdrant_result = RetrievalResult(
@@ -56,7 +112,8 @@ async def test_vector_search_called_with_collection_names_list():
     assert args[0] == ["c1", "c2"]
     assert args[1] == [0.1]
     assert args[2] is None  # sparse vector
-    assert args[3] == 2  # k
+    # With no explicit candidate limit the fetch depth falls back to k * multiplier.
+    assert args[3] == 2
 
 
 async def test_deduplication():
@@ -77,6 +134,7 @@ async def test_deduplication():
 
 async def test_parent_context_restored_after_child_retrieval(monkeypatch):
     """Sibling hits return one cited parent while other parents remain visible."""
+    monkeypatch.setattr("app.services.pipeline.settings.retrieval_candidate_limit", None)
     monkeypatch.setattr("app.services.pipeline.settings.parent_candidate_multiplier", 3)
     request = SearchRequest(queries=["warranty"], collection_names=["manuals"], k=2)
     result_set = RetrievalResult(
@@ -132,6 +190,42 @@ async def test_top_three_children_are_selected_before_parent_expansion(monkeypat
     assert all("parent_text" not in metadata for metadata in response.metadatas[0])
 
 
+async def test_fixed_depth_groups_siblings_before_returning_verbatim_matches(monkeypatch):
+    from app.config import settings
+    from app.services import reranker
+
+    monkeypatch.setattr(settings, "enable_reranking", True)
+    monkeypatch.setattr(settings, "reranker_provider", "fastembed")
+    monkeypatch.setattr(settings, "rerank_fusion", "replace")
+    monkeypatch.setattr(settings, "rerank_top_k", 2)
+    monkeypatch.setattr(settings, "rerank_min_score", 0.5)
+    monkeypatch.setattr(settings, "retrieval_candidate_limit", 80)
+    monkeypatch.setattr(settings, "rerank_dedup_before_limit", True)
+    monkeypatch.setattr(settings, "retrieval_context_mode", "matched_child")
+    monkeypatch.setattr(
+        reranker, "_local_rerank_scores", lambda query, texts: [0.9, 0.8, 0.7, 0.1]
+    )
+    leaves = RetrievalResult(
+        texts=["a1", "a2", "b1", "below threshold"],
+        metadatas=[
+            {"file_id": "a", "parent_id": "pa", "parent_text": "a1 a2", "child_split_id": 0},
+            {"file_id": "a", "parent_id": "pa", "parent_text": "a1 a2", "child_split_id": 1},
+            {"file_id": "b", "parent_id": "pb", "parent_text": "more text b1"},
+            {"file_id": "c", "parent_id": "pc", "parent_text": "irrelevant"},
+        ],
+        distances=[0.9, 0.8, 0.7, 0.6],
+    )
+    request = SearchRequest(queries=["policy"], collection_names=["allowed"], k=2)
+    with _patch_embed([[0.1]]), _patch_vsearch(leaves) as vector, _patch_has_sparse():
+        response = await linear_search(request)
+    assert vector.call_args.args[0] == ["allowed"]
+    assert vector.call_args.args[3] == 80
+    assert response.documents == [["a1", "b1"]]
+    assert response.distances == [[0.9, 0.7]]
+    assert response.metadatas[0][0]["child_split_id"] == 0
+    assert all("parent_text" not in meta for meta in response.metadatas[0])
+
+
 async def test_k_limits_results():
     request = SearchRequest(queries=["hello"], collection_names=["coll1"], k=1)
     mock_result = RetrievalResult(
@@ -159,6 +253,7 @@ async def test_multiple_queries():
 async def test_reranking_enabled(monkeypatch):
     monkeypatch.setattr("app.services.pipeline.settings.enable_reranking", True)
     monkeypatch.setattr("app.services.pipeline.settings.initial_retrieval_multiplier", 3)
+    monkeypatch.setattr("app.services.pipeline.settings.retrieval_candidate_limit", None)
 
     request = SearchRequest(queries=["hello"], collection_names=["coll1"], k=2)
     mock_result = RetrievalResult(

@@ -393,30 +393,7 @@ async def agentic_search(request: SearchRequest) -> SearchResponse:
                     [_source_score_pairs(r.metadatas, r.distances) for r in seeded],
                 )
 
-    if request.messages:
-        recent = request.messages[-settings.agent_conversation_history_messages :]
-        conversation = "\n".join(f"{m.role}: {m.content}" for m in recent)
-        user_prompt = (
-            f"Analyze the following conversation and find the most relevant "
-            f"documents for the user's latest information need.\n\n"
-            f"Today's date: {date.today().isoformat()}\n\n"
-            f"Conversation:\n{conversation}\n"
-        )
-    else:
-        user_prompt = f"Find the most relevant documents for: {'; '.join(queries)}\n"
-
-    # If Open WebUI passed a custom query generation template, include it
-    # so the agent reflects admin-configured guidelines.
-    if request.retrieval_query_generation_prompt_template:
-        user_prompt += (
-            f"\nAdditional query generation guidelines:\n"
-            f"{request.retrieval_query_generation_prompt_template}\n"
-        )
-
-    user_prompt += (
-        f"\nSearch across collections: {', '.join(request.collection_names)}\n"
-        f"Return up to {k} results."
-    )
+    user_prompt = _build_search_prompt(request, queries, k)
 
     log.info(
         "Agentic search: queries=%d, collections=%s",
@@ -455,19 +432,44 @@ async def agentic_search(request: SearchRequest) -> SearchResponse:
             deps.full_results = []
 
     retrieval_results = deps.full_results or []
+    _record_agent_usage(result, retrieval_results, deps)
+
+    return _respond(retrieval_results, k)
+
+
+def _build_search_prompt(request: SearchRequest, queries: list[str], k: int) -> str:
+    if request.messages:
+        recent = request.messages[-settings.agent_conversation_history_messages :]
+        conversation = "\n".join(f"{m.role}: {m.content}" for m in recent)
+        user_prompt = (
+            f"Analyze the following conversation and find the most relevant "
+            f"documents for the user's latest information need.\n\n"
+            f"Today's date: {date.today().isoformat()}\n\n"
+            f"Conversation:\n{conversation}\n"
+        )
+    else:
+        user_prompt = f"Find the most relevant documents for: {'; '.join(queries)}\n"
+    if request.retrieval_query_generation_prompt_template:
+        user_prompt += (
+            f"\nAdditional query generation guidelines:\n"
+            f"{request.retrieval_query_generation_prompt_template}\n"
+        )
+    user_prompt += (
+        f"\nSearch across collections: {', '.join(request.collection_names)}\n"
+        f"Return up to {k} results."
+    )
+    return user_prompt
+
+
+def _record_agent_usage(result, retrieval_results, deps: AgentDeps) -> None:
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+
     run_usage = result.usage
     log.info(
         "Agentic search complete: %d result sets, usage=%s",
         len(retrieval_results) if retrieval_results else 0,
         run_usage,
     )
-
-    # Walk the model responses to surface token usage by role per step (the
-    # queries built each round are in ``deps.round_stats``). ``retrieve_rounds > 1``
-    # means a corrective retry happened (the agent judged a round off-topic and
-    # searched again) — the closest observable signal of the retry decision.
-    from pydantic_ai.messages import ModelResponse, ToolCallPart
-
     step = 0
     retrieve_rounds = 0
     for msg in result.all_messages():
@@ -490,12 +492,9 @@ async def agentic_search(request: SearchRequest) -> SearchResponse:
                 u.output_tokens,
                 u.input_tokens + u.output_tokens,
             )
-
     metrics.agent_iterations.observe(run_usage.requests)
     if retrieve_rounds > 1:
         metrics.agent_retries_total.inc()
         log.info("Agent performed %d retrieve rounds (retry occurred)", retrieve_rounds)
     if deps.round_stats:
         log.debug("Agent round stats: %s", deps.round_stats)
-
-    return _respond(retrieval_results, k)

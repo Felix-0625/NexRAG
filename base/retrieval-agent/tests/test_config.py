@@ -12,6 +12,12 @@ def _settings(**overrides) -> Settings:
     return Settings(_env_file=None, **base)
 
 
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+def test_hybrid_weights_reject_nonpositive_or_nonfinite_values(value):
+    with pytest.raises(ValidationError):
+        _settings(hybrid_sparse_weight=value)
+
+
 def test_log_level_normalises_case():
     assert _settings(log_level="debug").log_level == "DEBUG"
 

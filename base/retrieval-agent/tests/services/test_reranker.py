@@ -3,9 +3,25 @@ from unittest.mock import AsyncMock, patch
 import httpx
 
 from app.config import settings
+from app.services import reranker
 from app.services.reranker import rerank
 
 _FAKE_REQUEST = httpx.Request("POST", "http://fake/v1/rerank")
+
+
+def test_local_rerank_retries_all_pairs_in_smaller_batches_after_allocator_failure(monkeypatch):
+    from onnxruntime.capi.onnxruntime_pybind11_state import Fail
+
+    class MemoryLimitedCrossEncoder:
+        def rerank(self, _query, documents):
+            if len(documents) > 2:
+                yield float(documents[0])
+                raise Fail("Available memory is smaller than requested bytes")
+            yield from map(float, documents)
+
+    monkeypatch.setattr(reranker, "_local_model", MemoryLimitedCrossEncoder())
+    monkeypatch.setattr(settings, "reranker_model", "cross-encoder/test")
+    assert reranker._local_rerank_scores("question", ["1", "2", "3", "4", "5"]) == [1, 2, 3, 4, 5]
 
 
 async def test_rerank_basic_replace_mode():
@@ -59,6 +75,23 @@ async def test_local_cross_encoder_scores_candidates_before_parent_restore():
     assert texts == ["seller revenue child", "unrelated child"]
     assert metas == [{"parent_id": "b"}, {"parent_id": "a"}]
     assert scores == [0.8, 0.2]
+
+
+async def test_title_is_only_in_model_input_and_older_metadata_still_works():
+    documents = ["first chunk", "legacy chunk"]
+    metadatas = [{"search_title": "Privacy Guide"}, {"filename": "legacy.txt"}]
+    with (
+        patch.object(settings, "reranker_provider", "fastembed"),
+        patch.object(settings, "enable_filename_retrieval", True),
+        patch.object(settings, "rerank_fusion", "replace"),
+        patch("app.services.reranker._local_rerank_scores", return_value=[0.9, 0.2]) as local,
+    ):
+        texts, metas, scores = await rerank("query", documents, metadatas, k=2)
+
+    local.assert_called_once_with("query", ["Privacy Guide\nfirst chunk", "legacy chunk"])
+    assert texts == documents
+    assert metas == metadatas
+    assert scores == [0.9, 0.2]
 
 
 def _diagnostic_response():

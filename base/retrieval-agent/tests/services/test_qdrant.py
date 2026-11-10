@@ -7,7 +7,26 @@ from qdrant_client import models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 from app.models import RetrievalResult
+from app.services import qdrant
 from app.services.qdrant import dense_vector_name, reset_sparse_capability, vector_search
+
+
+@pytest.mark.parametrize(
+    ("uri", "trust_env"),
+    [
+        ("http://127.0.0.1:6333", False),
+        ("http://[::1]:6333", False),
+        ("localhost:6333", False),
+        ("https://localhost:6333", True),
+        ("https://db.example.com:6333", True),
+    ],
+)
+def test_qdrant_bypasses_proxy_for_local_http_only(monkeypatch, uri, trust_env):
+    monkeypatch.setattr(qdrant, "_client", None)
+    monkeypatch.setattr(qdrant.settings, "qdrant_uri", uri)
+    with patch.object(qdrant, "QdrantClient") as constructor:
+        assert qdrant.get_client() is constructor.return_value
+    assert constructor.call_args.kwargs["trust_env"] is trust_env
 
 
 def _make_point(id, content, meta, score):
@@ -114,6 +133,36 @@ async def test_vector_search_filter_targets_meta_collection_name():
     cond = qfilter.must[0]
     assert cond.key == "meta.collection_name"
     assert cond.match.any == ["file-abc", "kb-xyz"]
+
+
+async def test_document_filter_intersects_acl_and_checks_qdrant_result():
+    client = MagicMock()
+    meta = {"collection_name": "allowed", "file_id": "manual", "ingest_version": "v1"}
+    client.query_points.return_value.points = [
+        _make_point("1", "current", meta, 0.8),
+        _make_point("2", "old", dict(meta, ingest_version="v0"), 0.7),
+        _make_point("3", "private", dict(meta, collection_name="private"), 0.6),
+    ]
+    sparse = models.SparseVector(indices=[1], values=[1.0])
+    with (
+        patch("app.services.qdrant.get_client", return_value=client),
+        patch("app.services.qdrant.has_sparse_vectors", return_value=True),
+    ):
+        denied = await vector_search(
+            ["allowed"], [0.1], sparse, 10, document=("private", "manual", "v1")
+        )
+        client.query_points.assert_not_called()
+        allowed = await vector_search(
+            ["allowed"], [0.1], sparse, 10, document=("allowed", "manual", "v1")
+        )
+    assert denied.texts == []
+    assert allowed.texts == ["current"]
+    for prefetch in client.query_points.call_args.kwargs["prefetch"]:
+        acl, *document = prefetch.filter.must
+        assert acl.must[0].match.any == ["allowed"]
+        assert [(item.key, item.match.value) for item in document] == [
+            (f"meta.{field}", value) for field, value in meta.items()
+        ]
 
 
 async def test_vector_search_uses_named_dense_vector():
