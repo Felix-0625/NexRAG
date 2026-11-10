@@ -31,7 +31,7 @@
 
 ## 原生运行与移除部署交付物
 
-项目对外启动入口为 `start.cmd` / `start.ps1`。WebUI 准备流程改用 `patches/open-webui/v0.11.4/nexrag/`，仅按 tenant-selector、ops-dashboard、workspace、security-npm 四个本项目补丁顺序应用，其中 security-npm.diff 只修改 `package.json` 与 `package-lock.json` 以升级有安全修复的前端依赖。README、local-run、数据库接入与诊断文档已经移除容器部署操作。
+项目对外启动入口为 `start.cmd` / `start.ps1`。WebUI 准备流程使用 `patches/open-webui/v0.11.4/nexrag/`，按 tenant-selector、ops-dashboard、workspace、security-npm、fonts 五个本项目补丁顺序应用。security-npm.diff 维护前端依赖及 ESLint 配置；fonts 移除无用字体引用，准备脚本删除 Vazirmatn TTF。README、local-run、数据库接入与诊断文档已经移除容器部署操作。
 
 已按明确单文件清单移除根编排配置、`deploy/nexrag/Dockerfile`、三个基座的构建/编排/Taskfile 入口，以及旧编排基座中的六个 compose、Taskfile 和两个构建文件。没有操作用户机器上的镜像、容器、运行卷或其他项目。
 
